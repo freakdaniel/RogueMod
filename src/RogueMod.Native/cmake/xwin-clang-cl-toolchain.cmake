@@ -1,0 +1,55 @@
+set(CMAKE_SYSTEM_NAME Windows)
+set(CMAKE_SYSTEM_PROCESSOR x86_64)
+set(CMAKE_SYSTEM_VERSION 10.0)
+set(CMAKE_CXX_COMPILER_TARGET x86_64-pc-windows-msvc)
+set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
+
+find_program(ROGUEMOD_CLANG_CL NAMES clang-cl clang-cl-22 clang-cl-21 clang-cl-20 clang-cl-19 REQUIRED)
+find_program(ROGUEMOD_LLD_LINK NAMES lld-link lld-link-22 lld-link-21 lld-link-20 lld-link-19 REQUIRED)
+find_program(ROGUEMOD_LLVM_LIB NAMES llvm-lib llvm-lib-22 llvm-lib-21 llvm-lib-20 llvm-lib-19 llvm-ar REQUIRED)
+find_program(ROGUEMOD_LLVM_RANLIB NAMES llvm-ranlib llvm-ranlib-22 llvm-ranlib-21 llvm-ranlib-20 llvm-ranlib-19 REQUIRED)
+find_program(ROGUEMOD_LLVM_RC NAMES llvm-rc llvm-rc-22 llvm-rc-21 llvm-rc-20 llvm-rc-19 REQUIRED)
+
+set(CMAKE_CXX_COMPILER "${ROGUEMOD_CLANG_CL}")
+set(CMAKE_LINKER "${ROGUEMOD_LLD_LINK}")
+set(CMAKE_AR "${ROGUEMOD_LLVM_LIB}")
+set(CMAKE_RANLIB "${ROGUEMOD_LLVM_RANLIB}")
+set(CMAKE_RC_COMPILER "${ROGUEMOD_LLVM_RC}")
+
+if(DEFINED ENV{XWIN_DIR})
+    set(ROGUEMOD_XWIN_DIR "$ENV{XWIN_DIR}")
+else()
+    message(FATAL_ERROR "XWIN_DIR must point to an xwin splat directory.")
+endif()
+if(NOT EXISTS "${ROGUEMOD_XWIN_DIR}/sdk/include/um/Windows.h")
+    message(FATAL_ERROR "Windows SDK was not found below XWIN_DIR=${ROGUEMOD_XWIN_DIR}.")
+endif()
+
+execute_process(
+    COMMAND "${ROGUEMOD_CLANG_CL}" /clang:-print-resource-dir
+    OUTPUT_VARIABLE ROGUEMOD_CLANG_RESOURCE_DIR
+    OUTPUT_STRIP_TRAILING_WHITESPACE)
+
+set(ROGUEMOD_SYSTEM_INCLUDES
+    "/external:I${ROGUEMOD_CLANG_RESOURCE_DIR}/include /external:I${ROGUEMOD_XWIN_DIR}/crt/include /external:I${ROGUEMOD_XWIN_DIR}/sdk/include/ucrt /external:I${ROGUEMOD_XWIN_DIR}/sdk/include/shared /external:I${ROGUEMOD_XWIN_DIR}/sdk/include/um /external:I${ROGUEMOD_XWIN_DIR}/sdk/include/winrt /external:W0")
+set(CMAKE_CXX_FLAGS_INIT
+    "-vctoolsdir=${ROGUEMOD_XWIN_DIR}/crt -winsdkdir=${ROGUEMOD_XWIN_DIR}/sdk ${ROGUEMOD_SYSTEM_INCLUDES} /D_DISABLE_CONSTEXPR_MUTEX_CONSTRUCTOR")
+
+set(ROGUEMOD_LINKER_FLAGS
+    "/LIBPATH:${ROGUEMOD_XWIN_DIR}/crt/lib/x86_64 /LIBPATH:${ROGUEMOD_XWIN_DIR}/sdk/lib/um/x86_64 /LIBPATH:${ROGUEMOD_XWIN_DIR}/sdk/lib/ucrt/x86_64 /MANIFEST:NO")
+set(CMAKE_SHARED_LINKER_FLAGS_INIT "${ROGUEMOD_LINKER_FLAGS}")
+set(CMAKE_EXE_LINKER_FLAGS_INIT "${ROGUEMOD_LINKER_FLAGS}")
+
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreadedDLL" CACHE STRING "" FORCE)
+set(CMAKE_CXX_STANDARD 23 CACHE STRING "" FORCE)
+set(CMAKE_CXX_STANDARD_REQUIRED ON CACHE BOOL "" FORCE)
+set(CMAKE_CXX_EXTENSIONS OFF CACHE BOOL "" FORCE)
+set(CMAKE_CXX_STANDARD_LIBRARIES
+    "kernel32.lib user32.lib shell32.lib ole32.lib oleaut32.lib uuid.lib advapi32.lib oldnames.lib"
+    CACHE STRING "" FORCE)
+
+set(CMAKE_FIND_ROOT_PATH "${ROGUEMOD_XWIN_DIR}")
+set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)

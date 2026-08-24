@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>RogueMod.Sdk</AssemblyName>
+    <RootNamespace>RogueMod.Sdk</RootNamespace>
+    <PackageId>RogueMod.Sdk</PackageId>
+    <Version>0.1.0</Version>
+    <Description>JMAP importer and strongly typed game SDK generator for RogueMod.</Description>
+  </PropertyGroup>
+</Project>

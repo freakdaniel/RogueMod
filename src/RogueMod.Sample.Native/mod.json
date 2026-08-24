@@ -1,0 +1,8 @@
+{
+  "id": "sample.hello-native",
+  "name": "Hello native mod",
+  "version": "0.1.0",
+  "kind": "native",
+  "entryPoint": "dlls/main.dll",
+  "loaderId": "HelloNativeMod"
+}

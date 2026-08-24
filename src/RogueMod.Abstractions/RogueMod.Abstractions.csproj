@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>RogueMod.Abstractions</AssemblyName>
+    <RootNamespace>RogueMod.Abstractions</RootNamespace>
+    <PackageId>RogueMod.Abstractions</PackageId>
+    <Version>0.1.0</Version>
+    <Description>Stable managed API for RogueMod mods.</Description>
+  </PropertyGroup>
+</Project>

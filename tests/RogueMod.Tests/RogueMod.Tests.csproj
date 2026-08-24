@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>RogueMod.Tests</AssemblyName>
+    <RootNamespace>RogueMod.Tests</RootNamespace>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/RogueMod.Core/RogueMod.Core.csproj" />
+    <ProjectReference Include="../../src/RogueMod.Sdk/RogueMod.Sdk.csproj" />
+    <ProjectReference Include="../../src/RogueMod.Runtime/RogueMod.Runtime.csproj" />
+    <ProjectReference Include="../Fixtures/TestManagedMod/TestManagedMod.csproj" />
+  </ItemGroup>
+</Project>

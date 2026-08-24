@@ -1,0 +1,38 @@
+<Project>
+  <PropertyGroup>
+    <RogueModArtifactsRoot Condition="'$(RogueModArtifactsRoot)' == ''">$(MSBuildProjectDirectory)/.artifacts</RogueModArtifactsRoot>
+    <RogueModPackageOutput Condition="'$(RogueModPackageOutput)' == ''">$(RogueModArtifactsRoot)/packages/managed/$(Configuration)/$(RogueModModId)</RogueModPackageOutput>
+  </PropertyGroup>
+
+  <Target Name="ValidateRogueModPackageProperties">
+    <Error Condition="'$(RogueModModId)' == ''" Text="RogueModModId is required." />
+    <Error Condition="'$(RogueModModName)' == ''" Text="RogueModModName is required." />
+    <Error Condition="'$(RogueModEntryPoint)' == ''" Text="RogueModEntryPoint is required." />
+  </Target>
+
+  <Target Name="PackageRogueMod"
+          DependsOnTargets="Build;ValidateRogueModPackageProperties">
+    <PropertyGroup>
+      <_RogueModDllDirectory>$(RogueModPackageOutput)/dlls</_RogueModDllDirectory>
+      <_RogueModManifest>{&quot;id&quot;:&quot;$(RogueModModId)&quot;,&quot;name&quot;:&quot;$(RogueModModName)&quot;,&quot;version&quot;:&quot;$(Version)&quot;,&quot;kind&quot;:&quot;managed&quot;,&quot;entryPoint&quot;:&quot;dlls/$(TargetFileName)::$(RogueModEntryPoint)&quot;}</_RogueModManifest>
+    </PropertyGroup>
+
+    <ItemGroup>
+      <_RogueModRuntimeFile Include="$(TargetPath)" />
+      <_RogueModRuntimeFile Include="@(ReferenceCopyLocalPaths)"
+                            Condition="'%(Filename)' != 'RogueMod.Abstractions'" />
+    </ItemGroup>
+
+    <RemoveDir Directories="$(RogueModPackageOutput)" />
+    <MakeDir Directories="$(_RogueModDllDirectory)" />
+    <Copy SourceFiles="@(_RogueModRuntimeFile)"
+          DestinationFolder="$(_RogueModDllDirectory)"
+          SkipUnchangedFiles="true" />
+    <WriteLinesToFile File="$(RogueModPackageOutput)/mod.json"
+                      Lines="$(_RogueModManifest)"
+                      Overwrite="true"
+                      Encoding="UTF-8" />
+
+    <Message Importance="high" Text="RogueMod package: $(RogueModPackageOutput)" />
+  </Target>
+</Project>

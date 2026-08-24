@@ -1,0 +1,12 @@
+**/bin/
+**/obj/
+.idea/
+.vscode/
+*.user
+*.log
+*.dmp
+.artifacts/
+.build/
+.deps/
+.tools/
+.xwin-cache/

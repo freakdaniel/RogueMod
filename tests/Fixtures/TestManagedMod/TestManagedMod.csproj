@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>TestManagedMod</AssemblyName>
+    <RootNamespace>RogueMod.Tests.Fixtures</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../../src/RogueMod.Abstractions/RogueMod.Abstractions.csproj" />
+  </ItemGroup>
+</Project>
+

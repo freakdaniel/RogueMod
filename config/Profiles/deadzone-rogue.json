@@ -1,0 +1,20 @@
+{
+  "id": "deadzone-rogue-steam",
+  "displayName": "Deadzone: Rogue",
+  "steamAppId": 3228590,
+  "unrealEngineVersion": "5.6.1",
+  "executableRelativePath": "Valhalla/Binaries/Win64/DeadzoneSteam-Win64-Shipping.exe",
+  "ue4ss": {
+    "rootRelativePath": "Valhalla/Binaries/Win64/ue4ss",
+    "proxyRelativePath": "Valhalla/Binaries/Win64/dwmapi.dll",
+    "libraryRelativePath": "Valhalla/Binaries/Win64/ue4ss/UE4SS.dll",
+    "protonDllOverride": "dwmapi=n,b",
+    "compatibilityFiles": [
+      {
+        "sourceRelativePath": "config/Compatibility/DeadzoneRogue/VTableLayout.ini",
+        "destinationRelativePath": "Valhalla/Binaries/Win64/ue4ss/VTableLayout.ini",
+        "normalizedSha256": "7eac5245ce3c3fddeec40ba2f30725b11c26b669b8a43afe323937929902bfa4"
+      }
+    ]
+  }
+}

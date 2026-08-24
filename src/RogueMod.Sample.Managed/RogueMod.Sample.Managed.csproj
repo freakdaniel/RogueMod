@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>RogueMod.Sample.Managed</AssemblyName>
+    <RootNamespace>RogueMod.Sample.Managed</RootNamespace>
+    <Version>0.1.0</Version>
+
+    <RogueModModId>sample.hello-managed</RogueModModId>
+    <RogueModModName>Hello managed mod</RogueModModName>
+    <RogueModEntryPoint>RogueMod.Sample.Managed.HelloMod</RogueModEntryPoint>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../RogueMod.Abstractions/RogueMod.Abstractions.csproj"
+                      Private="false" />
+  </ItemGroup>
+
+  <Import Project="../RogueMod.Sdk/Managed/RogueMod.ManagedMod.targets" />
+</Project>

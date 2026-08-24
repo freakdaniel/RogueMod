@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>RogueMod.Runtime</AssemblyName>
+    <RootNamespace>RogueMod.Runtime</RootNamespace>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <GenerateRuntimeConfigurationFiles>true</GenerateRuntimeConfigurationFiles>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../RogueMod.Abstractions/RogueMod.Abstractions.csproj" />
+    <ProjectReference Include="../RogueMod.Core/RogueMod.Core.csproj" />
+  </ItemGroup>
+</Project>
