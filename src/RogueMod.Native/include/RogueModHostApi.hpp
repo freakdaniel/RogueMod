@@ -4,7 +4,7 @@
 
 namespace RogueMod
 {
-    inline constexpr std::uint32_t HostAbiVersion = 10;
+    inline constexpr std::uint32_t HostAbiVersion = 11;
 
     enum class LogLevel : std::int32_t
     {
@@ -70,6 +70,19 @@ namespace RogueMod
 
     static_assert(sizeof(UnrealParameter) == 40, "RogueMod Unreal parameter ABI changed unexpectedly.");
 
+    enum class UnrealHookPhase : std::int32_t
+    {
+        Pre = 1,
+        Post = 2,
+    };
+
+    using UnrealHookCallback = std::int32_t(__cdecl*)(
+        std::uint64_t context,
+        std::uint64_t object_handle,
+        std::int32_t phase,
+        std::uint32_t parameter_count,
+        UnrealParameter* parameters);
+
     struct HostApi
     {
         std::uint32_t size;
@@ -111,7 +124,16 @@ namespace RogueMod
             std::uint64_t* handles,
             std::uint32_t capacity,
             std::uint32_t* required);
+        std::int32_t(__cdecl* unreal_register_hook)(
+            const wchar_t* function_path,
+            std::int32_t phase,
+            std::uint32_t parameter_count,
+            const UnrealParameter* parameters,
+            UnrealHookCallback callback,
+            std::uint64_t context,
+            std::uint64_t* token);
+        std::int32_t(__cdecl* unreal_unregister_hook)(std::uint64_t token);
     };
 
-    static_assert(sizeof(HostApi) == 128, "RogueMod host ABI changed unexpectedly.");
+    static_assert(sizeof(HostApi) == 144, "RogueMod host ABI changed unexpectedly.");
 }

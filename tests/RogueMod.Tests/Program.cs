@@ -50,10 +50,91 @@ public sealed class RogueModTests
     public void NativeBootstrapValidatesAbiTest() => NativeBootstrapValidatesAbi();
 
     [Fact]
+    public void NativeReflectionTypeRegistryPreservesAbiTest() => NativeReflectionTypeRegistryPreservesAbi();
+
+    [Fact]
+    public unsafe void NativeFunctionHooksDispatchAndUnregisterTest() => NativeFunctionHooksDispatchAndUnregister();
+
+    [Fact]
     public Task ManagedModLoadsAndUnloadsTest() => ManagedModLoadsAndUnloads().AsTask();
 
     [Fact]
     public void JMapImportsAndGeneratesTypedSdkTest() => JMapImportsAndGeneratesTypedSdk();
+
+    static void NativeReflectionTypeRegistryPreservesAbi()
+    {
+        Assert((uint)NativePropertyKind.Boolean == 1, "Boolean ABI kind changed.");
+        Assert((uint)NativePropertyKind.Object == 12, "Object ABI kind changed.");
+        Assert((uint)NativePropertyKind.Array == 17, "Array ABI kind changed.");
+        Assert((uint)NativePropertyKind.Optional == 18, "Optional ABI kind changed.");
+        Assert((uint)NativePropertyKind.LazyObject == 20, "Lazy-object ABI kind changed.");
+
+        Assert(NativeReflectionTypeRegistry.GetPropertyKind("EnumProperty:/Script/Test.Mode", 4) == NativePropertyKind.UInt32,
+            "Enum storage was not resolved through the shared type registry.");
+        Assert(NativeReflectionTypeRegistry.GetPropertyKind("ArrayProperty", 16) == NativePropertyKind.Array,
+            "TArray was not resolved through the shared type registry.");
+        Assert(NativeReflectionTypeRegistry.DecodePropertyKind(17U | 6U << 8) == NativePropertyKind.Array,
+            "Nested container encoding did not preserve the outer ABI kind.");
+
+        const float floatValue = 13.25F;
+        var floatWire = NativeScalarValueCodec.Encode(NativePropertyKind.Float, floatValue);
+        Assert(NativeScalarValueCodec.Decode(NativePropertyKind.Float, floatWire) is float decodedFloat
+            && decodedFloat == floatValue, "Float scalar codec did not round-trip.");
+
+        var handle = new UnrealObjectHandle(0x1234_5678UL);
+        var handleWire = NativeScalarValueCodec.Encode(NativePropertyKind.Object, handle);
+        Assert(NativeScalarValueCodec.Decode(NativePropertyKind.Object, handleWire) is UnrealObjectHandle decodedHandle
+            && decodedHandle == handle, "UObject handle scalar codec did not round-trip.");
+    }
+
+    static unsafe void NativeFunctionHooksDispatchAndUnregister()
+    {
+        var reflection = new NativeUnrealReflection(
+            &NativeBootstrapTestCallbacks.UnrealIsAvailable,
+            null,
+            null,
+            null,
+            null,
+            &NativeBootstrapTestCallbacks.UnrealGetCapabilities,
+            null,
+            null,
+            null,
+            null,
+            &NativeHookTestCallbacks.Register,
+            &NativeHookTestCallbacks.Unregister,
+            (_, _) => { });
+        var function = new UnrealFunctionDescriptor(
+            "/Script/Test.HookOwner",
+            "/Script/Test.HookOwner:Calculate",
+            "Calculate",
+            "FUNC_Public",
+            [
+                new("Input", "IntProperty", 0, 1, "CPF_Parm", 4),
+                new("ReturnValue", "IntProperty", 4, 1, "CPF_Parm | CPF_OutParm | CPF_ReturnParm", 4)
+            ]);
+
+        UnrealHookContext? observed = null;
+        using (reflection.RegisterHook(function, UnrealHookPhase.Pre, context => observed = context))
+        {
+            Assert(NativeHookTestCallbacks.Dispatch(0x0000_0007_0000_002A, 7, 0) == 0,
+                "Managed pre-hook callback rejected the native snapshot.");
+            Assert(observed is { Phase: UnrealHookPhase.Pre }
+                && observed.Arguments["Input"].As<int>() == 7,
+                "Managed pre-hook did not decode its input argument.");
+        }
+        Assert(NativeHookTestCallbacks.Callback == null,
+            "Disposing a managed hook did not unregister its native token.");
+
+        observed = null;
+        using (reflection.RegisterHook(function, UnrealHookPhase.Post, context => observed = context))
+        {
+            Assert(NativeHookTestCallbacks.Dispatch(0x0000_0007_0000_002A, 7, 9) == 0,
+                "Managed post-hook callback rejected the native snapshot.");
+            Assert(observed is { Phase: UnrealHookPhase.Post }
+                && observed.Result.ReturnValue.As<int>() == 9,
+                "Managed post-hook did not decode its return value.");
+        }
+    }
 
     static void ProfileLoads()
     {
@@ -419,8 +500,8 @@ public sealed class RogueModTests
     static unsafe void NativeBootstrapValidatesAbi()
     {
         using var directory = new TemporaryDirectory();
-        Assert(sizeof(NativeBootstrapTestCallbacks.HostApi) == 128, "Managed ABI 10 host table has an unexpected size.");
-        Assert(sizeof(NativeBootstrapTestCallbacks.NativeUnrealParameter) == 40, "Managed ABI 10 parameter has an unexpected size.");
+        Assert(sizeof(NativeBootstrapTestCallbacks.HostApi) == 144, "Managed ABI 11 host table has an unexpected size.");
+        Assert(sizeof(NativeBootstrapTestCallbacks.NativeUnrealParameter) == 40, "Managed ABI 11 parameter has an unexpected size.");
         NativeBootstrapTestCallbacks.Messages.Clear();
         NativeBootstrapTestCallbacks.PropertyWritten = false;
         NativeBootstrapTestCallbacks.StringPropertyWritten = false;
@@ -450,7 +531,7 @@ public sealed class RogueModTests
             var api = new NativeBootstrapTestCallbacks.HostApi
             {
                 Size = (uint)sizeof(NativeBootstrapTestCallbacks.HostApi),
-                AbiVersion = 10,
+                AbiVersion = 11,
                 Log = &NativeBootstrapTestCallbacks.CaptureLog,
                 ModRoot = modRootPointer,
                 GameProfileId = profileIdPointer,
@@ -465,13 +546,15 @@ public sealed class RogueModTests
                 UnrealWriteProperty = &NativeBootstrapTestCallbacks.UnrealWriteProperty,
                 UnrealInvoke = &NativeBootstrapTestCallbacks.UnrealInvoke,
                 GameModsRoot = modsRootPointer,
-                UnrealFindAllOf = &NativeBootstrapTestCallbacks.UnrealFindAllOf
+                UnrealFindAllOf = &NativeBootstrapTestCallbacks.UnrealFindAllOf,
+                UnrealRegisterHook = &NativeBootstrapTestCallbacks.UnrealRegisterHook,
+                UnrealUnregisterHook = &NativeBootstrapTestCallbacks.UnrealUnregisterHook
             };
 
             delegate* unmanaged[Cdecl]<nint, int> initialize = &NativeBootstrap.Initialize;
             delegate* unmanaged[Cdecl]<int, int> dispatchGameEvent = &NativeBootstrap.DispatchGameEvent;
             delegate* unmanaged[Cdecl]<int> shutdown = &NativeBootstrap.Shutdown;
-            Assert(initialize((nint)(&api)) == 0, "Native bootstrap rejected ABI version 10.");
+            Assert(initialize((nint)(&api)) == 0, "Native bootstrap rejected ABI version 11.");
             Assert(NativeBootstrapTestCallbacks.Messages.Contains("[C#:sample.mod] loaded:sample.mod"), "Installed managed mod was not loaded.");
             Assert(NativeBootstrapTestCallbacks.Messages.Contains("[C#:sample.mod] reflection:/Test/PlayerController"), "Native reflection ABI was not exposed to the managed mod.");
             Assert(NativeBootstrapTestCallbacks.Messages.Contains("[C#:sample.mod] discovery:/Test/PlayerController:1"), "Typed object discovery was not exposed to the managed mod.");
@@ -696,6 +779,10 @@ public sealed class RogueModTests
         var abstractionsProject = FindRepositoryFile("src/RogueMod.Abstractions/RogueMod.Abstractions.csproj");
         var result = new CSharpSdkGenerator().Generate(model, output, "DeadzoneRogue.Sdk", abstractionsProject);
         var source = File.ReadAllText(result.SourcePath);
+        var secondOutput = Path.Combine(directory.Path, "sdk-repeat");
+        var repeatedResult = new CSharpSdkGenerator().Generate(model, secondOutput, "DeadzoneRogue.Sdk", abstractionsProject);
+        Assert(File.ReadAllBytes(result.SourcePath).SequenceEqual(File.ReadAllBytes(repeatedResult.SourcePath)),
+            "The C# type translator produced non-deterministic generated source.");
         Assert(source.Contains("public class BP_Player : Actor", StringComparison.Ordinal), "Generated class inheritance is missing.");
         Assert(source.Contains("IUnrealObjectType<BP_Player>", StringComparison.Ordinal), "Generated typed object construction contract is missing.");
         Assert(source.Contains("public new static IReadOnlyList<BP_Player> FindAll", StringComparison.Ordinal), "Generated typed FindAll wrapper is missing.");
@@ -721,6 +808,12 @@ public sealed class RogueModTests
         Assert(source.Contains("public UnrealOptional<int> EchoOptional(UnrealOptional<int> input)", StringComparison.Ordinal), "Generated TOptional UFunction wrapper is missing.");
         Assert(source.Contains("public Actor? EchoWeak(Actor? input)", StringComparison.Ordinal), "Generated weak UObject UFunction wrapper is missing.");
         Assert(source.Contains("public UnrealLazyObjectReference<Actor> EchoLazy(UnrealLazyObjectReference<Actor> input)", StringComparison.Ordinal), "Generated lazy UObject UFunction wrapper is missing.");
+        Assert(source.Contains("public static IDisposable RegisterSetHealthPreHook", StringComparison.Ordinal),
+            "Generated strongly typed pre-hook registration is missing.");
+        Assert(source.Contains("public static IDisposable RegisterGetHealthPostHook", StringComparison.Ordinal),
+            "Generated strongly typed post-hook registration is missing.");
+        Assert(source.Contains("public delegate void EchoNumbersPreHookHandler(BP_Player context, IReadOnlyList<int> input)", StringComparison.Ordinal),
+            "Generated TArray hook callback did not use its translated argument type.");
         Assert(source.Contains("Array: new(\"IntProperty\", 4", StringComparison.Ordinal), "Generated TArray element descriptor is missing.");
         Assert(source.Contains("ElementArray = new(\"IntProperty\", 4", StringComparison.Ordinal), "Generated nested TArray descriptor is missing.");
         Assert(source.Contains("Optional = new(\"IntProperty\", 4", StringComparison.Ordinal), "Generated TOptional value descriptor is missing.");

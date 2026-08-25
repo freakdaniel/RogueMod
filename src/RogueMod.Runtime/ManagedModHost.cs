@@ -7,13 +7,15 @@ public sealed class ManagedModHost : IAsyncDisposable
 {
     private ManagedModLoadContext? _loadContext;
     private IRogueMod? _instance;
+    private IDisposable? _contextLifetime;
     private bool _eventCallbacksEnabled = true;
 
-    private ManagedModHost(ModManifest manifest, ManagedModLoadContext loadContext, IRogueMod instance)
+    private ManagedModHost(ModManifest manifest, ManagedModLoadContext loadContext, IRogueMod instance, IDisposable? contextLifetime)
     {
         Manifest = manifest;
         _loadContext = loadContext;
         _instance = instance;
+        _contextLifetime = contextLifetime;
     }
 
     public ModManifest Manifest { get; }
@@ -79,10 +81,11 @@ public sealed class ManagedModHost : IAsyncDisposable
             var instance = Activator.CreateInstance(type) as IRogueMod
                 ?? throw new InvalidDataException($"Type '{entryPoint.TypeName}' must have a public parameterless constructor.");
             await instance.LoadAsync(context, cancellationToken).ConfigureAwait(false);
-            return new(manifest, loadContext, instance);
+            return new(manifest, loadContext, instance, context as IDisposable);
         }
         catch
         {
+            (context as IDisposable)?.Dispose();
             loadContext.Unload();
             throw;
         }
@@ -109,8 +112,10 @@ public sealed class ManagedModHost : IAsyncDisposable
     {
         var instance = Interlocked.Exchange(ref _instance, null);
         var loadContext = Interlocked.Exchange(ref _loadContext, null);
+        var contextLifetime = Interlocked.Exchange(ref _contextLifetime, null);
         if (instance is null || loadContext is null)
         {
+            contextLifetime?.Dispose();
             return;
         }
 
@@ -120,6 +125,7 @@ public sealed class ManagedModHost : IAsyncDisposable
         }
         finally
         {
+            contextLifetime?.Dispose();
             loadContext.Unload();
         }
     }

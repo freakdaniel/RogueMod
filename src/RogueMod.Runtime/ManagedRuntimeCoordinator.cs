@@ -60,7 +60,7 @@ internal sealed class ManagedRuntimeCoordinator(
                         descriptor.Manifest.Id,
                         gameProfileId,
                         new RuntimeModLogger(descriptor.Manifest.Id, log),
-                        unreal);
+                        new OwnedUnrealReflection(unreal));
                     var host = await ManagedModHost.LoadAsync(
                         descriptor.Manifest,
                         descriptor.Directory,
@@ -177,7 +177,10 @@ internal sealed class ManagedRuntimeCoordinator(
         string ModId,
         string GameProfileId,
         IModLogger Logger,
-        IUnrealReflection Unreal) : IModContext;
+        IUnrealReflection Unreal) : IModContext, IDisposable
+    {
+        public void Dispose() => (Unreal as IDisposable)?.Dispose();
+    }
 
     private sealed class RuntimeModLogger(string modId, Action<ModLogLevel, string> log) : IModLogger
     {

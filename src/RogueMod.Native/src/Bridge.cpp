@@ -208,6 +208,24 @@ namespace
         return UnrealReflection.invoke(handle, function_name, parameter_count, parameters);
     }
 
+    std::int32_t __cdecl unreal_register_hook(
+        const wchar_t* function_path,
+        std::int32_t phase,
+        std::uint32_t parameter_count,
+        const RogueMod::UnrealParameter* parameters,
+        RogueMod::UnrealHookCallback callback,
+        std::uint64_t context,
+        std::uint64_t* token)
+    {
+        return UnrealReflection.register_hook(
+            function_path, phase, parameter_count, parameters, callback, context, token);
+    }
+
+    std::int32_t __cdecl unreal_unregister_hook(std::uint64_t token)
+    {
+        return UnrealReflection.unregister_hook(token);
+    }
+
     void log_result(const wchar_t* operation, std::int32_t result)
     {
         wchar_t message[256]{};
@@ -381,7 +399,9 @@ namespace
                 &unreal_write_property,
                 &unreal_invoke,
                 game_mods_root.c_str(),
-                &unreal_find_all_of};
+                &unreal_find_all_of,
+                &unreal_register_hook,
+                &unreal_unregister_hook};
             log_bridge(1, L"Calling managed Initialize entry point.");
             result = initialize(&api);
             log_result(L"managed Initialize", result);

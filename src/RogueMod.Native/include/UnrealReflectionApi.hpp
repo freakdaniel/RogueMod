@@ -3,6 +3,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <shared_mutex>
 #include <string>
 #include <vector>
 
@@ -51,6 +52,15 @@ namespace RogueMod
             const wchar_t* property_name,
             std::uint32_t encoded_property_kind,
             const UnrealValue* value) const;
+        [[nodiscard]] std::int32_t register_hook(
+            const wchar_t* function_path,
+            std::int32_t phase,
+            std::uint32_t parameter_count,
+            const UnrealParameter* parameters,
+            UnrealHookCallback callback,
+            std::uint64_t context,
+            std::uint64_t* token);
+        [[nodiscard]] std::int32_t unregister_hook(std::uint64_t token);
 
       private:
         using find_first_of_fn = void*(__cdecl*)(const wchar_t*);
@@ -121,9 +131,25 @@ namespace RogueMod
             const UnrealValue& value) const;
         void destroy_array_value(void* property, void* address, std::uint32_t encoded_kind) const;
         void destroy_optional_value(void* property, void* address) const;
+        void dispatch_hook(UnrealHookPhase phase, void* object, void* function, void* parameters) const noexcept;
+
+        struct HookRegistration
+        {
+            std::uint64_t token{};
+            void* function{};
+            UnrealHookPhase phase{};
+            std::vector<UnrealParameter> parameters;
+            std::vector<void*> properties;
+            UnrealHookCallback callback{};
+            std::uint64_t context{};
+        };
 
         std::atomic_bool m_ready{};
         bool m_resolved{};
+        bool m_process_event_hooks_resolved{};
+        std::uint64_t m_next_hook_token{};
+        mutable std::shared_mutex m_hook_mutex;
+        std::vector<HookRegistration> m_hooks;
         find_first_of_fn m_find_first_of{};
         static_find_object_fn m_static_find_object{};
         find_all_of_fn m_find_all_of{};

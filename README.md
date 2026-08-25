@@ -6,7 +6,7 @@ RogueMod is a C#-first mod loader and manager for Deadzone: Rogue, built on RE-U
 
 Deadzone: Rogue 1.4.2.0 / Unreal Engine 5.6.1 is confirmed working through Proton with the game-specific `VTableLayout.ini`. UE4SS loads the native sample and the small `RogueModBridge`; the bridge starts a private Windows CoreCLR 10.0.10 and the managed runtime loads each C# mod in its own collectible `AssemblyLoadContext`.
 
-The reflection path has been tested in the main menu with real `PlayerController`, UMG, Niagara, and `ValGameInstance` instances. ABI 5 added zero-parameter calls, scalar input and return marshalling, and primitive property reads and writes. ABI 6 moved the shared package source to `<GameRoot>/Mods`. ABI 7 added allocator-safe `FString` and `FName` marshalling. ABI 8 added field-wise POD script structs and typed generated adapters. ABI 9 added `FText` and `TArray` marshalling. ABI 10 adds safe multi-object discovery through UE4SS `FindAllOf`, generated `FindFirst<T>`/`FindAll<T>` wrappers, capability-gated nested `TArray` transport, `TOptional<T>` set/unset transport, serial-safe `TWeakObjectPtr<T>` reads/writes, and identity-preserving `FLazyObjectPtr` transport without changing the 16-byte wire value. Optional, weak, and lazy property mutation/restoration are verified in the installed game; nested arrays remain automated-transport-tested because the current JMAP has no live nested-array target.
+The reflection path has been tested in the main menu with real `PlayerController`, UMG, Niagara, and `ValGameInstance` instances. ABI 5 added zero-parameter calls, scalar input and return marshalling, and primitive property reads and writes. ABI 6 moved the shared package source to `<GameRoot>/Mods`. ABI 7 added allocator-safe `FString` and `FName` marshalling. ABI 8 added field-wise POD script structs and typed generated adapters. ABI 9 added `FText` and `TArray` marshalling. ABI 10 added safe multi-object discovery through UE4SS `FindAllOf`, generated `FindFirst<T>`/`FindAll<T>` wrappers, capability-gated nested `TArray` transport, `TOptional<T>` set/unset transport, serial-safe `TWeakObjectPtr<T>` reads/writes, and identity-preserving `FLazyObjectPtr` transport without changing the 16-byte wire value. ABI 11 adds ownership-safe, generated pre/post UFunction observation hooks that reuse the same descriptors and marshalling pipeline. Optional, weak, and lazy property mutation/restoration are verified in the installed game; nested arrays remain automated-transport-tested because the current JMAP has no live nested-array target.
 
 ## Repository layout
 
@@ -63,7 +63,6 @@ Both paths emit the same `.slnx` starter and ready package layout. While package
 ## Build and test
 
 ```bash
-dotnet tool restore
 dotnet build RogueMod.slnx -c Release
 dotnet test RogueMod.slnx -c Release
 ```

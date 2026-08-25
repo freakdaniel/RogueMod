@@ -4,6 +4,8 @@
 #include <combaseapi.h>
 #include <cwchar>
 #include <cstring>
+#include <functional>
+#include <mutex>
 #include <string>
 #include <tuple>
 #include <utility>
@@ -435,6 +437,36 @@ namespace RogueMod
             ue4ss_module,
             "?Free@FMemory@Unreal@RC@@SAXPEAX@Z");
 
+        using process_event_callback = std::function<void(void*, void*, void*)>;
+        using register_process_event_callback_fn = void(__cdecl*)(process_event_callback);
+        const auto register_process_event_pre = load_export<register_process_event_callback_fn>(
+            ue4ss_module,
+            "?RegisterProcessEventPreCallback@Hook@Unreal@RC@@YAXV?$function@$$A6AXPEAVUObject@Unreal@RC@@PEAVUFunction@23@PEAX@Z@std@@@Z");
+        const auto register_process_event_post = load_export<register_process_event_callback_fn>(
+            ue4ss_module,
+            "?RegisterProcessEventPostCallback@Hook@Unreal@RC@@YAXV?$function@$$A6AXPEAVUObject@Unreal@RC@@PEAVUFunction@23@PEAX@Z@std@@@Z");
+        if (register_process_event_pre != nullptr && register_process_event_post != nullptr)
+        {
+            try
+            {
+                register_process_event_pre(process_event_callback{
+                    [this](void* object, void* function, void* parameters)
+                    {
+                        dispatch_hook(UnrealHookPhase::Pre, object, function, parameters);
+                    }});
+                register_process_event_post(process_event_callback{
+                    [this](void* object, void* function, void* parameters)
+                    {
+                        dispatch_hook(UnrealHookPhase::Post, object, function, parameters);
+                    }});
+                m_process_event_hooks_resolved = true;
+            }
+            catch (...)
+            {
+                m_process_event_hooks_resolved = false;
+            }
+        }
+
         m_resolved = m_find_first_of != nullptr
             && m_get_internal_index != nullptr
             && m_index_to_object != nullptr
@@ -499,6 +531,9 @@ namespace RogueMod
                 | (m_lazy_object_set_value != nullptr
                        && m_fweak_object_get != nullptr
                     ? (1U << 8)
+                    : 0U)
+                | (m_process_event_hooks_resolved && m_static_find_object != nullptr
+                    ? (1U << 9)
                     : 0U)
             : 0U;
     }
@@ -1552,6 +1587,251 @@ namespace RogueMod
         catch (...)
         {
             return -6;
+        }
+    }
+
+    std::int32_t UnrealReflectionApi::register_hook(
+        const wchar_t* function_path,
+        std::int32_t phase_value,
+        std::uint32_t parameter_count,
+        const UnrealParameter* parameters,
+        UnrealHookCallback callback,
+        std::uint64_t context,
+        std::uint64_t* token)
+    {
+        if (token == nullptr)
+        {
+            return -2;
+        }
+        *token = 0;
+        if (!is_available() || !m_process_event_hooks_resolved || m_static_find_object == nullptr)
+        {
+            return -1;
+        }
+        if (function_path == nullptr || *function_path == L'\0' || callback == nullptr
+            || (parameter_count != 0 && parameters == nullptr)
+            || parameter_count > UINT8_MAX)
+        {
+            return -2;
+        }
+        const auto phase = static_cast<UnrealHookPhase>(phase_value);
+        if (phase != UnrealHookPhase::Pre && phase != UnrealHookPhase::Post)
+        {
+            return -2;
+        }
+
+        try
+        {
+            const std::wstring path{function_path};
+            const auto separator = path.rfind(L':');
+            if (separator == std::wstring::npos || separator == 0 || separator + 1 >= path.size())
+            {
+                return -3;
+            }
+            const auto owner_path = path.substr(0, separator);
+            const auto function_name = path.substr(separator + 1);
+            auto* owner = m_static_find_object(nullptr, nullptr, owner_path.c_str(), false);
+            auto* function = owner == nullptr
+                ? nullptr
+                : m_get_function_by_name_in_chain(owner, function_name.c_str());
+            if (function == nullptr)
+            {
+                return -3;
+            }
+
+            const auto* parms_size_pointer = m_get_parms_size(function);
+            const auto* num_parms_pointer = m_get_num_parms(function);
+            const auto* return_offset_pointer = m_get_return_value_offset(function);
+            if (parms_size_pointer == nullptr || num_parms_pointer == nullptr || return_offset_pointer == nullptr
+                || *num_parms_pointer != parameter_count)
+            {
+                return -4;
+            }
+            const auto parms_size = static_cast<std::size_t>(*parms_size_pointer);
+            if ((parameter_count == 0) != (parms_size == 0))
+            {
+                return -4;
+            }
+
+            HookRegistration registration;
+            registration.function = function;
+            registration.phase = phase;
+            registration.callback = callback;
+            registration.context = context;
+            if (parameter_count != 0)
+            {
+                registration.parameters.assign(parameters, parameters + parameter_count);
+            }
+            registration.properties.reserve(parameter_count);
+
+            auto* live_property = parameter_count == 0 ? nullptr : m_get_first_property(function);
+            bool has_return{};
+            for (std::uint32_t index = 0; index < parameter_count; ++index)
+            {
+                if (live_property == nullptr)
+                {
+                    return -4;
+                }
+                registration.properties.push_back(live_property);
+                auto& parameter = registration.parameters[index];
+                const auto kind = decode_kind(parameter.kind);
+                const auto size = (kind == UnrealPropertyKind::Struct || kind == UnrealPropertyKind::Optional)
+                        && parameter.size > 0
+                    ? static_cast<std::size_t>(parameter.size)
+                    : expected_value_size(kind);
+                const auto* live_offset = m_get_offset(live_property);
+                const auto* live_size = m_get_element_size(live_property);
+                if (size == 0 || parameter.array_dimension != 1 || parameter.offset < 0
+                    || size > maximum_marshaled_struct_size
+                    || parameter.size != static_cast<std::int32_t>(size)
+                    || static_cast<std::size_t>(parameter.offset) + size > parms_size
+                    || live_offset == nullptr || *live_offset != parameter.offset
+                    || live_size == nullptr || *live_size != parameter.size)
+                {
+                    return -5;
+                }
+                if ((parameter.flags & static_cast<std::uint32_t>(UnrealParameterFlags::Return)) != 0)
+                {
+                    if (has_return || parameter.offset != *return_offset_pointer)
+                    {
+                        return -5;
+                    }
+                    has_return = true;
+                }
+                parameter.value = {parameter.kind, 0, 0};
+                live_property = m_get_next_field_as_property(live_property);
+            }
+
+            std::unique_lock lock{m_hook_mutex};
+            registration.token = ++m_next_hook_token;
+            if (registration.token == 0)
+            {
+                registration.token = ++m_next_hook_token;
+            }
+            *token = registration.token;
+            m_hooks.push_back(std::move(registration));
+            return 0;
+        }
+        catch (...)
+        {
+            return -6;
+        }
+    }
+
+    std::int32_t UnrealReflectionApi::unregister_hook(std::uint64_t token)
+    {
+        if (token == 0)
+        {
+            return -2;
+        }
+        try
+        {
+            std::unique_lock lock{m_hook_mutex};
+            const auto iterator = std::find_if(
+                m_hooks.begin(), m_hooks.end(),
+                [token](const HookRegistration& registration) { return registration.token == token; });
+            if (iterator == m_hooks.end())
+            {
+                return -3;
+            }
+            m_hooks.erase(iterator);
+            return 0;
+        }
+        catch (...)
+        {
+            return -4;
+        }
+    }
+
+    void UnrealReflectionApi::dispatch_hook(
+        UnrealHookPhase phase,
+        void* object,
+        void* function,
+        void* parameter_buffer) const noexcept
+    {
+        if (!is_available() || object == nullptr || function == nullptr)
+        {
+            return;
+        }
+        try
+        {
+            std::vector<HookRegistration> matching;
+            {
+                std::shared_lock lock{m_hook_mutex};
+                for (const auto& registration : m_hooks)
+                {
+                    if (registration.phase == phase && registration.function == function)
+                    {
+                        matching.push_back(registration);
+                    }
+                }
+            }
+            if (matching.empty())
+            {
+                return;
+            }
+
+            const auto object_handle = make_handle(object);
+            if (object_handle == 0)
+            {
+                return;
+            }
+            for (const auto& registration : matching)
+            {
+                auto transported = registration.parameters;
+                bool valid = parameter_buffer != nullptr || transported.empty();
+                for (std::size_t index = 0; valid && index < transported.size(); ++index)
+                {
+                    auto& parameter = transported[index];
+                    const auto is_input = (parameter.flags & static_cast<std::uint32_t>(UnrealParameterFlags::Input)) != 0;
+                    const auto is_output = (parameter.flags & static_cast<std::uint32_t>(UnrealParameterFlags::Output)) != 0;
+                    const auto is_return = (parameter.flags & static_cast<std::uint32_t>(UnrealParameterFlags::Return)) != 0;
+                    const auto should_marshal = phase == UnrealHookPhase::Pre
+                        ? is_input
+                        : is_input || is_output || is_return;
+                    parameter.value = {parameter.kind, 0, 0};
+                    if (!should_marshal)
+                    {
+                        continue;
+                    }
+
+                    const auto* address = static_cast<const std::byte*>(parameter_buffer) + parameter.offset;
+                    const auto kind = decode_kind(parameter.kind);
+                    if (kind == UnrealPropertyKind::Boolean)
+                    {
+                        const auto byte_offset = static_cast<std::uint8_t>(parameter.bool_layout);
+                        auto byte_mask = static_cast<std::uint8_t>(parameter.bool_layout >> 8);
+                        if (byte_mask == 0)
+                        {
+                            byte_mask = 1;
+                        }
+                        const auto* boolean_address = reinterpret_cast<const std::uint8_t*>(address) + byte_offset;
+                        parameter.value.data = (*boolean_address & byte_mask) != 0 ? 1U : 0U;
+                    }
+                    else if (!marshal_typed_value(
+                                 registration.properties[index], address, parameter.kind, parameter.value))
+                    {
+                        valid = false;
+                    }
+                }
+
+                if (valid)
+                {
+                    registration.callback(
+                        registration.context,
+                        object_handle,
+                        static_cast<std::int32_t>(phase),
+                        static_cast<std::uint32_t>(transported.size()),
+                        transported.empty() ? nullptr : transported.data());
+                }
+                for (auto& parameter : transported)
+                {
+                    free_marshaled_value(parameter.value);
+                }
+            }
+        }
+        catch (...)
+        {
         }
     }
 

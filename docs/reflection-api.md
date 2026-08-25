@@ -17,6 +17,12 @@ RogueMod extends reflection support as complete vertical slices: JMAP import, ge
 | `TLazyObjectPtr<T>` / `FLazyObjectPtr` | Yes | Yes | Yes | Yes, pending/null/restore | `UnrealLazyObjectReference<T>` with persistent `UnrealGuid` |
 | object discovery | n/a | n/a | Yes | Yes | `FindFirst<T>` / `FindAll<T>` |
 
+## UFunction hooks
+
+ABI 11 advertises `UnrealReflectionCapabilities.FunctionHooks`. The generated SDK emits strongly typed `Register<Function>PreHook` and `Register<Function>PostHook` helpers beside every callable wrapper. Pre hooks receive translated input/ref arguments. Post hooks receive translated return and out/ref values. Snapshots are read-only in ABI 11; they cannot replace parameters, replace the return value, or prevent the original call.
+
+The bridge owns one UE4SS `ProcessEvent` callback per phase and filters registered function pointers internally. Disposing the returned subscription removes one registration. Remaining registrations are removed automatically before the owning managed mod is unloaded.
+
 Nested arrays are advertised through `UnrealReflectionCapabilities.NestedArrays`. ABI 10 packs the recursive kinds into the existing 32-bit kind field, allowing at most three `TArray` containers. An older bridge does not advertise the capability, so a newer runtime rejects the operation before crossing the unmanaged boundary.
 
 Array writes retain the existing allocator safety rules. Equal-length arrays are updated in place. A non-empty UE-owned allocation is not resized because the exact owning allocator cannot yet be proven from the installed UE4SS API. Nested arrays follow the same rule independently at each depth.

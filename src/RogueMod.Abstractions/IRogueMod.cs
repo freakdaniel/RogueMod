@@ -66,6 +66,13 @@ public interface IUnrealReflection
         UnrealFunctionDescriptor function,
         IReadOnlyList<UnrealArgument> arguments) =>
         throw new NotSupportedException("The active RogueMod bridge does not support UFunction invocation.");
+
+    /// <summary>Observes calls to a reflected UFunction until the returned subscription is disposed.</summary>
+    IDisposable RegisterHook(
+        UnrealFunctionDescriptor function,
+        UnrealHookPhase phase,
+        Action<UnrealHookContext> callback) =>
+        throw new NotSupportedException("The active RogueMod bridge does not support UFunction hooks.");
 }
 
 [Flags]
@@ -80,7 +87,14 @@ public enum UnrealReflectionCapabilities
     NestedArrays = 1 << 5,
     OptionalValues = 1 << 6,
     WeakObjectReferences = 1 << 7,
-    LazyObjectReferences = 1 << 8
+    LazyObjectReferences = 1 << 8,
+    FunctionHooks = 1 << 9
+}
+
+public enum UnrealHookPhase
+{
+    Pre = 1,
+    Post = 2
 }
 
 public readonly record struct UnrealObjectHandle(ulong Value)
@@ -427,6 +441,30 @@ public sealed record UnrealInvocationResult(
         return OutArguments.TryGetValue(name, out var value)
             ? value.As<T>()
             : throw new KeyNotFoundException($"UFunction did not return an out argument named '{name}'.");
+    }
+}
+
+/// <summary>A read-only snapshot of a hooked UFunction call.</summary>
+public sealed record UnrealHookContext(
+    UnrealObjectHandle Object,
+    UnrealFunctionDescriptor Function,
+    UnrealHookPhase Phase,
+    IReadOnlyDictionary<string, UnrealValue> Arguments,
+    UnrealInvocationResult Result);
+
+/// <summary>Value adapters used by strongly typed generated hook callbacks.</summary>
+public static class UnrealHookValue
+{
+    public static TWrapper? WrapObject<TWrapper>(
+        UnrealValue value,
+        IUnrealReflection unreal,
+        Func<IUnrealReflection, UnrealObjectHandle, TWrapper> factory)
+        where TWrapper : UnrealObject
+    {
+        ArgumentNullException.ThrowIfNull(unreal);
+        ArgumentNullException.ThrowIfNull(factory);
+        var handle = value.AsObjectHandle();
+        return handle.IsNull ? null : factory(unreal, handle);
     }
 }
 

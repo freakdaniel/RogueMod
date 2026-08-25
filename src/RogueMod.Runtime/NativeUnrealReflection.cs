@@ -1,6 +1,9 @@
 using RogueMod.Abstractions;
 using System.Buffers.Binary;
+using System.Collections.Concurrent;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using static RogueMod.Runtime.NativeReflectionTypeRegistry;
 
 namespace RogueMod.Runtime;
 
@@ -14,7 +17,10 @@ internal sealed unsafe class NativeUnrealReflection(
     delegate* unmanaged[Cdecl]<ulong, char*, uint, NativeUnrealReflection.NativeUnrealValue*, int> readProperty,
     delegate* unmanaged[Cdecl]<ulong, char*, uint, NativeUnrealReflection.NativeUnrealValue*, int> writeProperty,
     delegate* unmanaged[Cdecl]<ulong, char*, uint, NativeUnrealReflection.NativeUnrealParameter*, int> invokeFunction,
-    delegate* unmanaged[Cdecl]<char*, ulong*, uint, uint*, int> findAllOf) : IUnrealReflection
+    delegate* unmanaged[Cdecl]<char*, ulong*, uint, uint*, int> findAllOf,
+    delegate* unmanaged[Cdecl]<char*, int, uint, NativeUnrealReflection.NativeUnrealParameter*, delegate* unmanaged[Cdecl]<ulong, ulong, int, uint, NativeUnrealReflection.NativeUnrealParameter*, int>, ulong, ulong*, int> registerHook,
+    delegate* unmanaged[Cdecl]<ulong, int> unregisterHook,
+    Action<ModLogLevel, string> log) : IUnrealReflection
 {
     private const uint MaximumPathLength = 1_048_576;
     private const uint MaximumStringLength = 1_048_576;
@@ -23,9 +29,10 @@ internal sealed unsafe class NativeUnrealReflection(
     private const uint MaximumObjectCount = 1_048_576;
     private const uint LazyObjectWireSize = 48;
     private const int LazyObjectStorageSize = UnrealLazyObjectValue.NativeStorageSize;
-    private const uint PropertyKindMask = 0xff;
     private const int ContainerValueKindShift = 8;
     private const uint MaximumEncodedValueKind = 0x00ff_ffff;
+    private static readonly ConcurrentDictionary<ulong, HookRegistration> HookRegistrations = new();
+    private static long nextHookContext;
 
     public bool IsAvailable => isAvailable != null && isAvailable() != 0;
 
@@ -154,56 +161,30 @@ internal sealed unsafe class NativeUnrealReflection(
                 throw new ArgumentException($"UFunction argument '{argument.Name}' was supplied more than once.", nameof(arguments));
             }
         }
-        var nativeParameters = new NativeUnrealParameter[descriptors.Count];
+        var nativeParameters = CreateNativeParameterDescriptors(function);
         using var inputAllocations = new NativeAllocations();
         for (var index = 0; index < descriptors.Count; index++)
         {
             var descriptor = descriptors[index];
-            if (descriptor.ArrayDimension != 1)
-            {
-                throw new NotSupportedException(
-                    $"UFunction parameter '{function.Path}:{descriptor.Name}' is a fixed native array; ABI 10 supports scalar parameters and dynamic TArray values only.");
-            }
             var kind = GetPropertyKind(descriptor.UnrealType, descriptor.Size);
-            EnsurePropertyCapabilities(kind, descriptor.Array, descriptor.Optional);
-            var encodedKind = EncodePropertyKind(kind, descriptor.Array, descriptor.Optional);
-            var flags = (descriptor.IsInput ? NativeParameterFlags.Input : 0)
-                | (descriptor.IsOutput ? NativeParameterFlags.Output : 0)
-                | (descriptor.IsReturn ? NativeParameterFlags.Return : 0);
-            NativeUnrealValue nativeValue;
-            if (descriptor.IsInput)
+            if (!descriptor.IsInput)
             {
-                if (!suppliedArguments.Remove(descriptor.Name, out var argument))
-                {
-                    throw new ArgumentException(
-                        $"Required UFunction argument '{descriptor.Name}' was not supplied for '{function.Path}'.",
-                        nameof(arguments));
-                }
-                nativeValue = ToNativeValue(
-                    kind,
-                    encodedKind,
-                    argument,
-                    descriptor.Struct,
-                    descriptor.Array,
-                    descriptor.Optional,
-                    inputAllocations);
+                continue;
             }
-            else
+            if (!suppliedArguments.Remove(descriptor.Name, out var argument))
             {
-                nativeValue = new NativeUnrealValue { Kind = encodedKind };
+                throw new ArgumentException(
+                    $"Required UFunction argument '{descriptor.Name}' was not supplied for '{function.Path}'.",
+                    nameof(arguments));
             }
-            nativeParameters[index] = new NativeUnrealParameter
-            {
-                Kind = encodedKind,
-                Flags = (uint)flags,
-                Offset = descriptor.Offset,
-                Size = descriptor.Size,
-                ArrayDimension = (uint)descriptor.ArrayDimension,
-                BoolLayout = (uint)(descriptor.ByteOffset & 0xff)
-                    | (uint)(descriptor.ByteMask & 0xff) << 8
-                    | (uint)(descriptor.FieldMask & 0xff) << 16,
-                Value = nativeValue
-            };
+            nativeParameters[index].Value = ToNativeValue(
+                kind,
+                nativeParameters[index].Kind,
+                argument,
+                descriptor.Struct,
+                descriptor.Array,
+                descriptor.Optional,
+                inputAllocations);
         }
         if (suppliedArguments.Count != 0)
         {
@@ -262,6 +243,165 @@ internal sealed unsafe class NativeUnrealReflection(
         }
     }
 
+    public IDisposable RegisterHook(
+        UnrealFunctionDescriptor function,
+        UnrealHookPhase phase,
+        Action<UnrealHookContext> callback)
+    {
+        ArgumentNullException.ThrowIfNull(function);
+        ArgumentNullException.ThrowIfNull(callback);
+        if (phase is not (UnrealHookPhase.Pre or UnrealHookPhase.Post))
+        {
+            throw new ArgumentOutOfRangeException(nameof(phase));
+        }
+        if ((Capabilities & UnrealReflectionCapabilities.FunctionHooks) == 0 || registerHook == null || unregisterHook == null)
+        {
+            throw new NotSupportedException("The active RogueMod bridge does not support UFunction hooks.");
+        }
+
+        var nativeParameters = CreateNativeParameterDescriptors(function);
+        var context = unchecked((ulong)Interlocked.Increment(ref nextHookContext));
+        var registration = new HookRegistration(this, function, phase, callback);
+        if (!HookRegistrations.TryAdd(context, registration))
+        {
+            throw new InvalidOperationException("Could not allocate a unique managed UFunction hook context.");
+        }
+
+        ulong nativeToken = 0;
+        int result;
+        fixed (char* functionPath = function.Path)
+        fixed (NativeUnrealParameter* parameterPointer = nativeParameters)
+        {
+            result = registerHook(
+                functionPath,
+                (int)phase,
+                (uint)nativeParameters.Length,
+                parameterPointer,
+                &DispatchHook,
+                context,
+                &nativeToken);
+        }
+        if (result != 0 || nativeToken == 0)
+        {
+            HookRegistrations.TryRemove(context, out _);
+            if (result is -4 or -5)
+            {
+                throw new InvalidOperationException(
+                    $"UFunction '{function.Path}' no longer matches its generated hook descriptor (native status {result}). " +
+                    "Regenerate the SDK from a current JMAP dump.");
+            }
+            throw new InvalidOperationException($"UFunction hook registration for '{function.Path}' failed with native status {result}.");
+        }
+
+        return new HookSubscription(context, nativeToken, unregisterHook);
+    }
+
+    private NativeUnrealParameter[] CreateNativeParameterDescriptors(UnrealFunctionDescriptor function)
+    {
+        var descriptors = function.ParameterList;
+        var nativeParameters = new NativeUnrealParameter[descriptors.Count];
+        for (var index = 0; index < descriptors.Count; index++)
+        {
+            var descriptor = descriptors[index];
+            if (descriptor.ArrayDimension != 1)
+            {
+                throw new NotSupportedException(
+                    $"UFunction parameter '{function.Path}:{descriptor.Name}' is a fixed native array; RogueMod supports scalar parameters and dynamic TArray values only.");
+            }
+            var kind = GetPropertyKind(descriptor.UnrealType, descriptor.Size);
+            EnsurePropertyCapabilities(kind, descriptor.Array, descriptor.Optional);
+            var encodedKind = EncodePropertyKind(kind, descriptor.Array, descriptor.Optional);
+            var flags = (descriptor.IsInput ? NativeParameterFlags.Input : 0)
+                | (descriptor.IsOutput ? NativeParameterFlags.Output : 0)
+                | (descriptor.IsReturn ? NativeParameterFlags.Return : 0);
+            nativeParameters[index] = new NativeUnrealParameter
+            {
+                Kind = encodedKind,
+                Flags = (uint)flags,
+                Offset = descriptor.Offset,
+                Size = descriptor.Size,
+                ArrayDimension = (uint)descriptor.ArrayDimension,
+                BoolLayout = (uint)(descriptor.ByteOffset & 0xff)
+                    | (uint)(descriptor.ByteMask & 0xff) << 8
+                    | (uint)(descriptor.FieldMask & 0xff) << 16,
+                Value = new NativeUnrealValue { Kind = encodedKind }
+            };
+        }
+        return nativeParameters;
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static int DispatchHook(
+        ulong context,
+        ulong objectHandle,
+        int nativePhase,
+        uint parameterCount,
+        NativeUnrealParameter* parameters)
+    {
+        if (!HookRegistrations.TryGetValue(context, out var registration)
+            || Volatile.Read(ref registration.Disabled) != 0)
+        {
+            return 0;
+        }
+
+        try
+        {
+            var phase = (UnrealHookPhase)nativePhase;
+            if (phase != registration.Phase || parameterCount != registration.Function.ParameterList.Count
+                || (parameterCount != 0 && parameters == null))
+            {
+                return -2;
+            }
+
+            var arguments = new Dictionary<string, UnrealValue>(StringComparer.Ordinal);
+            var outputs = new Dictionary<string, UnrealValue>(StringComparer.Ordinal);
+            var returnValue = UnrealValue.Null;
+            for (var index = 0; index < registration.Function.ParameterList.Count; index++)
+            {
+                var descriptor = registration.Function.ParameterList[index];
+                if (phase == UnrealHookPhase.Pre && !descriptor.IsInput)
+                {
+                    continue;
+                }
+                var value = ToManagedValue(
+                    DecodePropertyKind(parameters[index].Kind),
+                    parameters[index].Value,
+                    descriptor.Struct,
+                    descriptor.Array,
+                    descriptor.Optional);
+                if (descriptor.IsInput)
+                {
+                    arguments[descriptor.Name] = value;
+                }
+                if (phase == UnrealHookPhase.Post && descriptor.IsReturn)
+                {
+                    returnValue = value;
+                }
+                else if (phase == UnrealHookPhase.Post && descriptor.IsOutput)
+                {
+                    outputs[descriptor.Name] = value;
+                }
+            }
+
+            registration.Callback(new UnrealHookContext(
+                new UnrealObjectHandle(objectHandle),
+                registration.Function,
+                phase,
+                arguments,
+                new UnrealInvocationResult(returnValue, outputs)));
+            return 0;
+        }
+        catch (Exception exception)
+        {
+            Interlocked.Exchange(ref registration.Disabled, 1);
+            registration.Owner.LogHookFailure(registration.Function.Path, exception);
+            return -3;
+        }
+    }
+
+    private void LogHookFailure(string functionPath, Exception exception) =>
+        log(ModLogLevel.Error, $"Disabled UFunction hook callback for '{functionPath}' after an exception: {exception}");
+
     public UnrealValue ReadProperty(UnrealObjectHandle handle, UnrealPropertyDescriptor property)
     {
         ArgumentNullException.ThrowIfNull(property);
@@ -308,24 +448,12 @@ internal sealed unsafe class NativeUnrealReflection(
     {
         object managedValue = kind switch
         {
-            NativePropertyKind.Boolean => nativeValue.Data != 0,
-            NativePropertyKind.Int8 => unchecked((sbyte)nativeValue.Data),
-            NativePropertyKind.UInt8 => unchecked((byte)nativeValue.Data),
-            NativePropertyKind.Int16 => unchecked((short)nativeValue.Data),
-            NativePropertyKind.UInt16 => unchecked((ushort)nativeValue.Data),
-            NativePropertyKind.Int32 => unchecked((int)nativeValue.Data),
-            NativePropertyKind.UInt32 => unchecked((uint)nativeValue.Data),
-            NativePropertyKind.Int64 => unchecked((long)nativeValue.Data),
-            NativePropertyKind.UInt64 => nativeValue.Data,
-            NativePropertyKind.Float => BitConverter.Int32BitsToSingle(unchecked((int)nativeValue.Data)),
-            NativePropertyKind.Double => BitConverter.Int64BitsToDouble(unchecked((long)nativeValue.Data)),
-            NativePropertyKind.Object or NativePropertyKind.WeakObject => new UnrealObjectHandle(nativeValue.Data),
             NativePropertyKind.LazyObject => ReadNativeLazyObject(nativeValue),
             NativePropertyKind.String or NativePropertyKind.Name or NativePropertyKind.Text => ReadNativeString(nativeValue),
             NativePropertyKind.Struct => ReadNativeStruct(nativeValue, RequireStructDescriptor(structDescriptor)),
             NativePropertyKind.Array => ReadNativeArray(nativeValue, RequireArrayDescriptor(arrayDescriptor)),
             NativePropertyKind.Optional => ReadNativeOptional(nativeValue, RequireOptionalDescriptor(optionalDescriptor)),
-            _ => throw new System.Diagnostics.UnreachableException()
+            _ => NativeScalarValueCodec.Decode(kind, nativeValue.Data)
         };
         return new UnrealValue(managedValue);
     }
@@ -376,21 +504,6 @@ internal sealed unsafe class NativeUnrealReflection(
         NativeAllocations allocations)
     {
         var managed = value.Value;
-        if (managed is Enum enumValue)
-        {
-            managed = kind switch
-            {
-                NativePropertyKind.Int8 => Convert.ToSByte(enumValue),
-                NativePropertyKind.UInt8 => Convert.ToByte(enumValue),
-                NativePropertyKind.Int16 => Convert.ToInt16(enumValue),
-                NativePropertyKind.UInt16 => Convert.ToUInt16(enumValue),
-                NativePropertyKind.Int32 => Convert.ToInt32(enumValue),
-                NativePropertyKind.UInt32 => Convert.ToUInt32(enumValue),
-                NativePropertyKind.Int64 => Convert.ToInt64(enumValue),
-                NativePropertyKind.UInt64 => Convert.ToUInt64(enumValue),
-                _ => managed
-            };
-        }
         if (kind is NativePropertyKind.String or NativePropertyKind.Name or NativePropertyKind.Text)
         {
             if (managed is not string text)
@@ -457,59 +570,8 @@ internal sealed unsafe class NativeUnrealReflection(
             return WriteNativeLazyObject(encodedKind, value, allocations);
         }
 
-        ulong data = kind switch
-        {
-            NativePropertyKind.Boolean when managed is bool typed => typed ? 1UL : 0UL,
-            NativePropertyKind.Int8 when managed is sbyte typed => unchecked((ulong)typed),
-            NativePropertyKind.UInt8 when managed is byte typed => typed,
-            NativePropertyKind.Int16 when managed is short typed => unchecked((ulong)typed),
-            NativePropertyKind.UInt16 when managed is ushort typed => typed,
-            NativePropertyKind.Int32 when managed is int typed => unchecked((ulong)typed),
-            NativePropertyKind.UInt32 when managed is uint typed => typed,
-            NativePropertyKind.Int64 when managed is long typed => unchecked((ulong)typed),
-            NativePropertyKind.UInt64 when managed is ulong typed => typed,
-            NativePropertyKind.Float when managed is float typed => unchecked((uint)BitConverter.SingleToInt32Bits(typed)),
-            NativePropertyKind.Double when managed is double typed => unchecked((ulong)BitConverter.DoubleToInt64Bits(typed)),
-            NativePropertyKind.Object or NativePropertyKind.WeakObject when managed is UnrealObjectHandle typed => typed.Value,
-            _ => throw new InvalidCastException(
-                $"Unreal property kind '{kind}' cannot be written from managed value type " +
-                $"'{value.Value?.GetType().FullName ?? "null"}'.")
-        };
+        var data = NativeScalarValueCodec.Encode(kind, managed);
         return new NativeUnrealValue { Kind = encodedKind, Data = data };
-    }
-
-    private static NativePropertyKind GetPropertyKind(string unrealType, int size)
-    {
-        var separator = unrealType.IndexOf(':');
-        var type = separator < 0 ? unrealType : unrealType[..separator];
-        return type switch
-        {
-            "BoolProperty" => NativePropertyKind.Boolean,
-            "Int8Property" => NativePropertyKind.Int8,
-            "ByteProperty" => NativePropertyKind.UInt8,
-            "Int16Property" => NativePropertyKind.Int16,
-            "UInt16Property" => NativePropertyKind.UInt16,
-            "IntProperty" => NativePropertyKind.Int32,
-            "UInt32Property" => NativePropertyKind.UInt32,
-            "Int64Property" => NativePropertyKind.Int64,
-            "UInt64Property" => NativePropertyKind.UInt64,
-            "FloatProperty" => NativePropertyKind.Float,
-            "DoubleProperty" => NativePropertyKind.Double,
-            "ObjectProperty" or "ClassProperty" => NativePropertyKind.Object,
-            "WeakObjectProperty" when size == 8 => NativePropertyKind.WeakObject,
-            "LazyObjectProperty" when size == LazyObjectStorageSize => NativePropertyKind.LazyObject,
-            "StrProperty" when size == 16 => NativePropertyKind.String,
-            "NameProperty" when size == 8 => NativePropertyKind.Name,
-            "TextProperty" when size == 16 => NativePropertyKind.Text,
-            "EnumProperty" when size == 1 => NativePropertyKind.UInt8,
-            "EnumProperty" when size == 2 => NativePropertyKind.UInt16,
-            "EnumProperty" when size == 4 => NativePropertyKind.UInt32,
-            "EnumProperty" when size == 8 => NativePropertyKind.UInt64,
-            "StructProperty" when size > 0 => NativePropertyKind.Struct,
-            "ArrayProperty" when size == 16 => NativePropertyKind.Array,
-            "OptionalProperty" when size > 0 => NativePropertyKind.Optional,
-            _ => throw new NotSupportedException($"Property type '{unrealType}' is not supported by RogueMod ABI 10.")
-        };
     }
 
     private static uint EncodePropertyKind(
@@ -536,13 +598,10 @@ internal sealed unsafe class NativeUnrealReflection(
         }
         if (encodedValueKind > MaximumEncodedValueKind)
         {
-            throw new NotSupportedException("RogueMod ABI 10 supports at most three nested container levels.");
+            throw new NotSupportedException("RogueMod ABI 11 supports at most three nested container levels.");
         }
         return (uint)kind | encodedValueKind << ContainerValueKindShift;
     }
-
-    private static NativePropertyKind DecodePropertyKind(uint encodedKind) =>
-        (NativePropertyKind)(encodedKind & PropertyKindMask);
 
     private static string ReadNativeString(NativeUnrealValue value)
     {
@@ -1063,31 +1122,6 @@ internal sealed unsafe class NativeUnrealReflection(
         return new UnrealStructValue(descriptor, fields);
     }
 
-    private static StructFieldKind GetFieldKind(string unrealType, int size)
-    {
-        var separator = unrealType.IndexOf(':');
-        var type = separator < 0 ? unrealType : unrealType[..separator];
-        return type switch
-        {
-            "BoolProperty" when size == 1 => StructFieldKind.Boolean,
-            "Int8Property" when size == 1 => StructFieldKind.Int8,
-            "ByteProperty" when size == 1 => StructFieldKind.UInt8,
-            "Int16Property" when size == 2 => StructFieldKind.Int16,
-            "UInt16Property" when size == 2 => StructFieldKind.UInt16,
-            "IntProperty" when size == 4 => StructFieldKind.Int32,
-            "UInt32Property" when size == 4 => StructFieldKind.UInt32,
-            "Int64Property" when size == 8 => StructFieldKind.Int64,
-            "UInt64Property" when size == 8 => StructFieldKind.UInt64,
-            "FloatProperty" when size == 4 => StructFieldKind.Float,
-            "DoubleProperty" when size == 8 => StructFieldKind.Double,
-            "EnumProperty" when size == 1 => StructFieldKind.UInt8,
-            "EnumProperty" when size == 2 => StructFieldKind.UInt16,
-            "EnumProperty" when size == 4 => StructFieldKind.UInt32,
-            "EnumProperty" when size == 8 => StructFieldKind.UInt64,
-            "StructProperty" => StructFieldKind.Struct,
-            _ => throw new NotSupportedException($"POD struct field type '{unrealType}' with size {size} is not supported.")
-        };
-    }
 
     private static InvalidCastException InvalidStructFieldCast(UnrealStructFieldDescriptor field, UnrealValue value) =>
         new($"Unreal struct field '{field.Name}' cannot be written from '{value.Value?.GetType().FullName ?? "null"}'.");
@@ -1192,6 +1226,42 @@ internal sealed unsafe class NativeUnrealReflection(
         }
     }
 
+    private sealed class HookRegistration(
+        NativeUnrealReflection owner,
+        UnrealFunctionDescriptor function,
+        UnrealHookPhase phase,
+        Action<UnrealHookContext> callback)
+    {
+        internal NativeUnrealReflection Owner { get; } = owner;
+        internal UnrealFunctionDescriptor Function { get; } = function;
+        internal UnrealHookPhase Phase { get; } = phase;
+        internal Action<UnrealHookContext> Callback { get; } = callback;
+        internal int Disabled;
+    }
+
+    private sealed class HookSubscription(
+        ulong context,
+        ulong nativeToken,
+        delegate* unmanaged[Cdecl]<ulong, int> unregister) : IDisposable
+    {
+        private long managedContext = unchecked((long)context);
+        private long token = unchecked((long)nativeToken);
+
+        public void Dispose()
+        {
+            var releasedToken = unchecked((ulong)Interlocked.Exchange(ref token, 0));
+            var releasedContext = unchecked((ulong)Interlocked.Exchange(ref managedContext, 0));
+            if (releasedContext != 0)
+            {
+                HookRegistrations.TryRemove(releasedContext, out _);
+            }
+            if (releasedToken != 0 && unregister != null)
+            {
+                unregister(releasedToken);
+            }
+        }
+    }
+
     internal struct NativeUnrealValue
     {
         internal uint Kind;
@@ -1218,43 +1288,4 @@ internal sealed unsafe class NativeUnrealReflection(
         Return = 4
     }
 
-    private enum NativePropertyKind : uint
-    {
-        Boolean = 1,
-        Int8 = 2,
-        UInt8 = 3,
-        Int16 = 4,
-        UInt16 = 5,
-        Int32 = 6,
-        UInt32 = 7,
-        Int64 = 8,
-        UInt64 = 9,
-        Float = 10,
-        Double = 11,
-        Object = 12,
-        String = 13,
-        Name = 14,
-        Struct = 15,
-        Text = 16,
-        Array = 17,
-        Optional = 18,
-        WeakObject = 19,
-        LazyObject = 20
-    }
-
-    private enum StructFieldKind
-    {
-        Boolean,
-        Int8,
-        UInt8,
-        Int16,
-        UInt16,
-        Int32,
-        UInt32,
-        Int64,
-        UInt64,
-        Float,
-        Double,
-        Struct
-    }
 }

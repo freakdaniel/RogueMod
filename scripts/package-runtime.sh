@@ -69,9 +69,19 @@ EOF
 
 archive="$repository_root/.artifacts/runtime/RogueMod.Runtime-win-x64.zip"
 rm -f "$archive"
-(
-    cd "$(dirname "$package_root")"
-    zip -qr "$archive" "$(basename "$package_root")"
-)
+if command -v zip >/dev/null 2>&1; then
+    (
+        cd "$(dirname "$package_root")"
+        zip -qr "$archive" "$(basename "$package_root")"
+    )
+elif command -v 7z >/dev/null 2>&1; then
+    (
+        cd "$(dirname "$package_root")"
+        7z a -tzip -bd -bso0 "$archive" "$(basename "$package_root")"
+    )
+else
+    printf '%s\n' 'Runtime archive creation requires either zip or 7z.' >&2
+    exit 1
+fi
 
 printf 'Runtime package: %s\nRuntime archive: %s\n' "$package_root" "$archive"

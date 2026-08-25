@@ -13,6 +13,10 @@ public sealed class HelloMod : IRogueMod, IRogueModGameEvents
     private bool _textSmokeLogged;
     private bool _nonEmptyArraySmokeLogged;
     private bool _objectEnumerationLogged;
+    private bool _hookCallbackLogged;
+    private bool _postHookCallbackLogged;
+    private IDisposable? _addYawInputHook;
+    private IDisposable? _canRestartPlayerHook;
 
     public ValueTask LoadAsync(IModContext context, CancellationToken cancellationToken = default)
     {
@@ -24,6 +28,10 @@ public sealed class HelloMod : IRogueMod, IRogueModGameEvents
 
     public ValueTask UnloadAsync(CancellationToken cancellationToken = default)
     {
+        _addYawInputHook?.Dispose();
+        _addYawInputHook = null;
+        _canRestartPlayerHook?.Dispose();
+        _canRestartPlayerHook = null;
         _logger?.Log(ModLogLevel.Information, "Hello managed mod unloaded.");
         _logger = null;
         _unreal = null;
@@ -34,6 +42,8 @@ public sealed class HelloMod : IRogueMod, IRogueModGameEvents
         _textSmokeLogged = false;
         _nonEmptyArraySmokeLogged = false;
         _objectEnumerationLogged = false;
+        _hookCallbackLogged = false;
+        _postHookCallbackLogged = false;
         return ValueTask.CompletedTask;
     }
 
@@ -80,6 +90,40 @@ public sealed class HelloMod : IRogueMod, IRogueModGameEvents
                         && (_unreal.Capabilities & UnrealReflectionCapabilities.FunctionInvocation) != 0)
                     {
                         var controller = new PlayerControllerSdk(_unreal, playerController);
+                        if (_addYawInputHook is null
+                            && (_unreal.Capabilities & UnrealReflectionCapabilities.FunctionHooks) != 0)
+                        {
+                            _addYawInputHook = PlayerControllerSdk.RegisterAddYawInputPreHook(
+                                _unreal,
+                                (_, value) =>
+                                {
+                                    if (!_hookCallbackLogged)
+                                    {
+                                        _hookCallbackLogged = true;
+                                        _logger?.Log(
+                                            ModLogLevel.Information,
+                                            $"Typed pre-hook succeeded: PlayerController.AddYawInput({value}).");
+                                    }
+                                });
+                            _logger?.Log(ModLogLevel.Information, "Typed UFunction pre-hook registered: PlayerController.AddYawInput.");
+                        }
+                        if (_canRestartPlayerHook is null
+                            && (_unreal.Capabilities & UnrealReflectionCapabilities.FunctionHooks) != 0)
+                        {
+                            _canRestartPlayerHook = PlayerControllerSdk.RegisterCanRestartPlayerPostHook(
+                                _unreal,
+                                (_, value) =>
+                                {
+                                    if (!_postHookCallbackLogged)
+                                    {
+                                        _postHookCallbackLogged = true;
+                                        _logger?.Log(
+                                            ModLogLevel.Information,
+                                            $"Typed post-hook succeeded: PlayerController.CanRestartPlayer()={value}.");
+                                    }
+                                });
+                            _logger?.Log(ModLogLevel.Information, "Typed UFunction post-hook registered: PlayerController.CanRestartPlayer.");
+                        }
                         controller.ResetControllerLightColor();
                         _logger?.Log(ModLogLevel.Information, "Typed UFunction call succeeded: PlayerController.ResetControllerLightColor().");
                         controller.AddYawInput(0.0f);
@@ -356,7 +400,35 @@ public sealed class HelloMod : IRogueMod, IRogueModGameEvents
         public void AddYawInput(float value) =>
             Call(AddYawInputFunction, new UnrealArgument("Val", UnrealValue.From(value)));
 
+        public static IDisposable RegisterAddYawInputPreHook(
+            IUnrealReflection unreal,
+            Action<PlayerControllerSdk, float> callback)
+        {
+            ArgumentNullException.ThrowIfNull(unreal);
+            ArgumentNullException.ThrowIfNull(callback);
+            return unreal.RegisterHook(
+                AddYawInputFunction,
+                UnrealHookPhase.Pre,
+                hook => callback(
+                    new PlayerControllerSdk(unreal, hook.Object),
+                    hook.Arguments["Val"].As<float>()));
+        }
+
         public bool CanRestartPlayer() => Call(CanRestartPlayerFunction).ReturnValue.As<bool>();
+
+        public static IDisposable RegisterCanRestartPlayerPostHook(
+            IUnrealReflection unreal,
+            Action<PlayerControllerSdk, bool> callback)
+        {
+            ArgumentNullException.ThrowIfNull(unreal);
+            ArgumentNullException.ThrowIfNull(callback);
+            return unreal.RegisterHook(
+                CanRestartPlayerFunction,
+                UnrealHookPhase.Post,
+                hook => callback(
+                    new PlayerControllerSdk(unreal, hook.Object),
+                    hook.Result.ReturnValue.As<bool>()));
+        }
 
         public string GetAttachParentSocketName() =>
             Call(GetAttachParentSocketNameFunction).ReturnValue.As<string>();
