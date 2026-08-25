@@ -34,7 +34,7 @@ scripts/                       Reproducible build and packaging entry points
 .build/                        Native build trees; ignored by Git
 ```
 
-`RogueMod.Sample.*` projects are repository examples used to exercise the SDK. `RogueMod.Templates/content` is the parameterized starter source shipped by `dotnet new` and `roguemod new`; keeping it inside the template project avoids a second top-level source tree while preserving the two different product roles.
+`RogueMod.Sample.*` projects are repository examples used to exercise the SDK. `RogueMod.Templates/content` is the parameterized starter source shipped by `dotnet new` and `roguemod new.
 
 ## Create a managed mod
 
@@ -158,7 +158,7 @@ Deadzone Rogue/
       dlls/main.dll
 ```
 
-Managed packages are loaded directly from this directory. Native packages are also stored here, then transactionally deployed to the internal `ue4ss/Mods/<loaderId>` directory because UE4SS requires that physical layout. The root package remains the source of truth.
+Managed packages are loaded directly from this directory. Native packages are also stored here, then transactionally deployed to the internal `ue4ss/Mods/<loaderId>` directory because UE4SS requires that physical layout.
 
 RogueMod infrastructure never lives in this `Mods` directory. Private CoreCLR, managed runtime, logs, and the shared game SDK are stored under `<GameRoot>/RogueMod`; `ue4ss/Mods/RogueModBridge` contains only the native bootstrap DLL.
 
