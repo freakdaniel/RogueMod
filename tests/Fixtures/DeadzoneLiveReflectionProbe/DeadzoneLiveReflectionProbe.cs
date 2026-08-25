@@ -182,7 +182,7 @@ public sealed class DeadzoneLiveReflectionProbe : IRogueMod, IRogueModGameEvents
             unreal.WriteProperty(owner, property, UnrealValue.From(pending));
             var pendingRead = unreal.ReadProperty(owner, property).As<UnrealLazyObjectValue>();
             if (pendingRead.ObjectId != pending.ObjectId
-                || !pendingRead.ResolvedHandle.IsNull
+                || !pendingRead.CachedHandle.IsNull
                 || !pendingRead.CopyNativeStorage().SequenceEqual(pending.CopyNativeStorage()))
             {
                 throw new InvalidOperationException("pending lazy identity did not survive a write/read round-trip");
@@ -207,9 +207,9 @@ public sealed class DeadzoneLiveReflectionProbe : IRogueMod, IRogueModGameEvents
             throw new InvalidOperationException("original lazy reference identity was not restored");
         }
 
-        var targetPath = restored.ResolvedHandle.IsNull
+        var targetPath = restored.CachedHandle.IsNull
             ? "<pending>"
-            : unreal.GetPathName(restored.ResolvedHandle) ?? "<stale>";
+            : unreal.GetPathName(restored.CachedHandle) ?? "<stale>";
         context.Logger.Log(
             ModLogLevel.Information,
             $"LIVE-LAZY PASS: {unreal.GetPathName(owner)} property={property.Name} original={original.ObjectId} pending={pending.ObjectId} target={targetPath} pending=ok null=ok restore=ok");

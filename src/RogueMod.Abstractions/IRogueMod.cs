@@ -257,7 +257,7 @@ public sealed class UnrealLazyObjectValue
 
     public UnrealLazyObjectValue(
         UnrealGuid objectId,
-        UnrealObjectHandle resolvedHandle,
+        UnrealObjectHandle cachedHandle,
         ReadOnlySpan<byte> nativeStorage)
     {
         if (nativeStorage.Length != NativeStorageSize)
@@ -268,15 +268,15 @@ public sealed class UnrealLazyObjectValue
         }
 
         ObjectId = objectId;
-        ResolvedHandle = resolvedHandle;
+        CachedHandle = cachedHandle;
         this.nativeStorage = nativeStorage.ToArray();
     }
 
     public UnrealGuid ObjectId { get; }
 
-    public UnrealObjectHandle ResolvedHandle { get; }
+    public UnrealObjectHandle CachedHandle { get; }
 
-    public bool IsNull => ObjectId.IsEmpty && ResolvedHandle.IsNull;
+    public bool IsNull => ObjectId.IsEmpty && CachedHandle.IsNull;
 
     public byte[] CopyNativeStorage() => (byte[])nativeStorage.Clone();
 
@@ -295,16 +295,17 @@ public sealed class UnrealLazyObjectReference<T> where T : UnrealObject
     private UnrealLazyObjectReference(UnrealLazyObjectValue transported, T? target)
     {
         this.transported = transported;
-        Target = target;
+        CachedTarget = target;
     }
 
     public UnrealGuid ObjectId => transported.ObjectId;
 
-    public T? Target { get; }
+    /// <summary>The target already cached by Unreal, or null when the reference is pending or stale.</summary>
+    public T? CachedTarget { get; }
 
     public bool IsNull => transported.IsNull;
 
-    public bool IsPending => !IsNull && Target is null;
+    public bool IsPending => !IsNull && CachedTarget is null;
 
     public static UnrealLazyObjectReference<T> Null { get; } =
         new(UnrealLazyObjectValue.Null, null);
@@ -317,9 +318,9 @@ public sealed class UnrealLazyObjectReference<T> where T : UnrealObject
     {
         ArgumentNullException.ThrowIfNull(factory);
         var transported = value.As<UnrealLazyObjectValue>();
-        var target = transported.ResolvedHandle.IsNull
+        var target = transported.CachedHandle.IsNull
             ? null
-            : factory(transported.ResolvedHandle);
+            : factory(transported.CachedHandle);
         return new UnrealLazyObjectReference<T>(transported, target);
     }
 }

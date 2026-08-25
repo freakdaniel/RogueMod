@@ -24,7 +24,7 @@ namespace RogueMod
         struct LazyObjectWire
         {
             std::byte storage[lazy_object_storage_size];
-            std::uint64_t resolved_handle;
+            std::uint64_t cached_handle;
             std::uint32_t guid_a;
             std::uint32_t guid_b;
             std::uint32_t guid_c;
@@ -655,7 +655,7 @@ namespace RogueMod
                 return false;
             }
             std::memcpy(wire->storage, address, lazy_object_storage_size);
-            wire->resolved_handle = make_handle(m_fweak_object_get(address));
+            wire->cached_handle = make_handle(m_fweak_object_get(address));
 
             // UE 5.6 TPersistentObjectPtr stores its FWeakObjectPtr cache first and the
             // FUniqueObjectGuid (four uint32 components) immediately after it. Preserve

@@ -67,11 +67,11 @@ public sealed class TestManagedMod : IRogueMod, IRogueModGameEvents
                 var weakResult = playerController.TestWeakObjectMarshalling(playerController);
                 _logger.Log(ModLogLevel.Information, $"weak:{weakResult?.PathName}");
                 var lazyController = playerController.LazyController;
-                _logger.Log(ModLogLevel.Information, $"property:LazyController={lazyController.ObjectId}:{lazyController.Target?.PathName}");
+                _logger.Log(ModLogLevel.Information, $"property:LazyController={lazyController.ObjectId}:{lazyController.CachedTarget?.PathName}");
                 playerController.LazyController = UnrealLazyObjectReference<TestPlayerController>.Null;
                 playerController.LazyController = lazyController;
                 var lazyResult = playerController.TestLazyObjectMarshalling(lazyController);
-                _logger.Log(ModLogLevel.Information, $"lazy:{lazyResult.ObjectId}:{lazyResult.Target?.PathName}");
+                _logger.Log(ModLogLevel.Information, $"lazy:{lazyResult.ObjectId}:{lazyResult.CachedTarget?.PathName}");
             }
         }
         return ValueTask.CompletedTask;

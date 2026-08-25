@@ -658,7 +658,7 @@ internal sealed unsafe class NativeUnrealReflection(
 
         var wire = new byte[LazyObjectWireSize];
         lazyValue.CopyNativeStorage().CopyTo(wire, 0);
-        BinaryPrimitives.WriteUInt64LittleEndian(wire.AsSpan(LazyObjectStorageSize), lazyValue.ResolvedHandle.Value);
+        BinaryPrimitives.WriteUInt64LittleEndian(wire.AsSpan(LazyObjectStorageSize), lazyValue.CachedHandle.Value);
         BinaryPrimitives.WriteUInt32LittleEndian(wire.AsSpan(32), lazyValue.ObjectId.A);
         BinaryPrimitives.WriteUInt32LittleEndian(wire.AsSpan(36), lazyValue.ObjectId.B);
         BinaryPrimitives.WriteUInt32LittleEndian(wire.AsSpan(40), lazyValue.ObjectId.C);
@@ -680,13 +680,13 @@ internal sealed unsafe class NativeUnrealReflection(
 
         var wire = new ReadOnlySpan<byte>((void*)value.Data, checked((int)value.Reserved));
         var storage = wire[..LazyObjectStorageSize].ToArray();
-        var resolvedHandle = new UnrealObjectHandle(BinaryPrimitives.ReadUInt64LittleEndian(wire[LazyObjectStorageSize..]));
+        var cachedHandle = new UnrealObjectHandle(BinaryPrimitives.ReadUInt64LittleEndian(wire[LazyObjectStorageSize..]));
         var objectId = new UnrealGuid(
             BinaryPrimitives.ReadUInt32LittleEndian(wire[32..]),
             BinaryPrimitives.ReadUInt32LittleEndian(wire[36..]),
             BinaryPrimitives.ReadUInt32LittleEndian(wire[40..]),
             BinaryPrimitives.ReadUInt32LittleEndian(wire[44..]));
-        return new UnrealLazyObjectValue(objectId, resolvedHandle, storage);
+        return new UnrealLazyObjectValue(objectId, cachedHandle, storage);
     }
 
     private static NativeUnrealValue WriteNativeOptional(
