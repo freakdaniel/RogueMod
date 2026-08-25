@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <PackageId>RogueMod.Templates</PackageId>
+    <Version>0.1.0</Version>
+    <Title>RogueMod project templates</Title>
+    <Authors>RogueMod contributors</Authors>
+    <Description>dotnet new templates for Deadzone: Rogue mods built with RogueMod.</Description>
+    <PackageTags>deadzone-rogue;modding;dotnet-new;templates</PackageTags>
+    <PackageProjectUrl>https://github.com/freakdaniel/RogueMod</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/freakdaniel/RogueMod.git</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageType>Template</PackageType>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <IncludeBuildOutput>false</IncludeBuildOutput>
+    <SuppressDependenciesWhenPacking>true</SuppressDependenciesWhenPacking>
+    <IncludeContentInPack>true</IncludeContentInPack>
+    <ContentTargetFolders>content</ContentTargetFolders>
+    <NoDefaultExcludes>true</NoDefaultExcludes>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Remove="**/*" />
+    <Content Include="content/RogueMod.ManagedMod/**/*"
+             Exclude="content/RogueMod.ManagedMod/**/bin/**;content/RogueMod.ManagedMod/**/obj/**"
+             Pack="true"
+             PackagePath="content/RogueMod.ManagedMod/%(RecursiveDir)%(Filename)%(Extension)" />
+    <None Include="README.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
+</Project>

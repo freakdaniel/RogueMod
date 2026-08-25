@@ -20,6 +20,12 @@ internal sealed class ManagedModLoadContext(string mainAssemblyPath)
             return typeof(IRogueMod).Assembly;
         }
 
+        var sharedAssembly = ManagedSharedAssemblyCatalog.Resolve(assemblyName);
+        if (sharedAssembly is not null)
+        {
+            return sharedAssembly;
+        }
+
         var path = _resolver.ResolveAssemblyToPath(assemblyName);
         return path is null ? null : LoadFromAssemblyPath(path);
     }

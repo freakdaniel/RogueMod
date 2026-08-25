@@ -5,6 +5,19 @@
     <RootNamespace>RogueMod.Abstractions</RootNamespace>
     <PackageId>RogueMod.Abstractions</PackageId>
     <Version>0.1.0</Version>
+    <Title>RogueMod managed abstractions</Title>
+    <Authors>RogueMod contributors</Authors>
     <Description>Stable managed API for RogueMod mods.</Description>
+    <PackageTags>deadzone-rogue;modding;ue4ss;unreal-engine</PackageTags>
+    <PackageProjectUrl>https://github.com/freakdaniel/RogueMod</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/freakdaniel/RogueMod.git</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
   </PropertyGroup>
+
+  <ItemGroup>
+    <None Update="README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
 </Project>

@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "gameProfile": "config/Profiles/deadzone-rogue.json",
+  "gameVersion": "1.4.2.0",
+  "packageId": "DeadzoneRogue.Sdk",
+  "packageVersion": "0.1.0",
+  "rogueModVersion": "0.1.0",
+  "rootNamespace": "DeadzoneRogue.Sdk",
+  "ue4ss": {
+    "version": "v3.0.1-1088-ga1e7f571",
+    "archiveName": "UE4SS_v3.0.1-1088-ga1e7f571.zip",
+    "downloadUrl": "https://github.com/UE4SS-RE/RE-UE4SS/releases/download/experimental-latest/UE4SS_v3.0.1-1088-ga1e7f571.zip",
+    "sha256": "7306a7799881344936ddead14b66030c402fce7d45d0f81a4de0b38055eebcd8"
+  }
+}

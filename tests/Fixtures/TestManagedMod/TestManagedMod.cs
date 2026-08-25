@@ -30,6 +30,8 @@ public sealed class TestManagedMod : IRogueMod, IRogueModGameEvents
                 _logger.Log(ModLogLevel.Information, $"text:{text}");
                 var numbers = playerController.TestArrayMarshalling([1, 2, 3]);
                 _logger.Log(ModLogLevel.Information, $"array:{string.Join(':', numbers)}");
+                var numberGroups = playerController.TestNestedArrayMarshalling([[1, 2], [3]]);
+                _logger.Log(ModLogLevel.Information, $"nested-array:{FormatGroups(numberGroups)}");
                 var vector = playerController.TestStructMarshalling(new TestVector { X = 1.0, Y = 2.0, Z = 3.0 });
                 _logger.Log(ModLogLevel.Information, $"struct:{vector.X}:{vector.Y}:{vector.Z}");
                 var spawnLocation = playerController.SpawnLocation;
@@ -47,6 +49,29 @@ public sealed class TestManagedMod : IRogueMod, IRogueModGameEvents
                 var scores = playerController.Scores;
                 _logger.Log(ModLogLevel.Information, $"property:Scores={string.Join(':', scores)}");
                 playerController.Scores = scores;
+                var scoreGroups = playerController.ScoreGroups;
+                _logger.Log(ModLogLevel.Information, $"property:ScoreGroups={FormatGroups(scoreGroups)}");
+                playerController.ScoreGroups = scoreGroups;
+                var optionalScore = playerController.OptionalScore;
+                _logger.Log(ModLogLevel.Information, $"property:OptionalScore={FormatOptional(optionalScore)}");
+                playerController.OptionalScore = optionalScore;
+                var optionalUnsetScore = playerController.OptionalUnsetScore;
+                _logger.Log(ModLogLevel.Information, $"property:OptionalUnsetScore={FormatOptional(optionalUnsetScore)}");
+                playerController.OptionalUnsetScore = optionalUnsetScore;
+                var optionalResult = playerController.TestOptionalMarshalling(UnrealOptional<int>.FromValue(7));
+                _logger.Log(ModLogLevel.Information, $"optional:{FormatOptional(optionalResult)}");
+                var weakController = playerController.WeakController;
+                _logger.Log(ModLogLevel.Information, $"property:WeakController={weakController?.PathName}");
+                playerController.WeakController = null;
+                playerController.WeakController = weakController;
+                var weakResult = playerController.TestWeakObjectMarshalling(playerController);
+                _logger.Log(ModLogLevel.Information, $"weak:{weakResult?.PathName}");
+                var lazyController = playerController.LazyController;
+                _logger.Log(ModLogLevel.Information, $"property:LazyController={lazyController.ObjectId}:{lazyController.Target?.PathName}");
+                playerController.LazyController = UnrealLazyObjectReference<TestPlayerController>.Null;
+                playerController.LazyController = lazyController;
+                var lazyResult = playerController.TestLazyObjectMarshalling(lazyController);
+                _logger.Log(ModLogLevel.Information, $"lazy:{lazyResult.ObjectId}:{lazyResult.Target?.PathName}");
             }
         }
         return ValueTask.CompletedTask;
@@ -61,6 +86,12 @@ public sealed class TestManagedMod : IRogueMod, IRogueModGameEvents
 
     public void OnGameEvent(ModGameEventKind eventKind) =>
         _logger?.Log(ModLogLevel.Information, $"event:{eventKind}");
+
+    private static string FormatGroups(IReadOnlyList<IReadOnlyList<int>> groups) =>
+        string.Join('|', groups.Select(group => string.Join(',', group)));
+
+    private static string FormatOptional<T>(UnrealOptional<T> value) =>
+        value.IsSet ? $"set:{value.Value}" : "unset";
 
     private sealed class TestPlayerController(IUnrealReflection unreal, UnrealObjectHandle handle)
         : UnrealObject(unreal, handle), IUnrealObjectType<TestPlayerController>
@@ -105,6 +136,11 @@ public sealed class TestManagedMod : IRogueMod, IRogueModGameEvents
                 new("ReturnValue", "TextProperty", 16, 1, "CPF_Parm | CPF_OutParm | CPF_ReturnParm", 16)
             ]);
         private static readonly UnrealArrayDescriptor IntArrayDescriptor = new("IntProperty", 4);
+        private static readonly UnrealOptionalDescriptor IntOptionalDescriptor = new("IntProperty", 4);
+        private static readonly UnrealArrayDescriptor NestedIntArrayDescriptor = new("ArrayProperty", 16)
+        {
+            ElementArray = IntArrayDescriptor
+        };
         private static readonly UnrealFunctionDescriptor TestArrayMarshallingFunction = new(
             "/Script/Engine.PlayerController",
             "/Script/Engine.PlayerController:TestArrayMarshalling",
@@ -113,6 +149,15 @@ public sealed class TestManagedMod : IRogueMod, IRogueModGameEvents
             [
                 new("Input", "ArrayProperty", 0, 1, "CPF_Parm", 16, Array: IntArrayDescriptor),
                 new("ReturnValue", "ArrayProperty", 16, 1, "CPF_Parm | CPF_OutParm | CPF_ReturnParm", 16, Array: IntArrayDescriptor)
+            ]);
+        private static readonly UnrealFunctionDescriptor TestNestedArrayMarshallingFunction = new(
+            "/Script/Engine.PlayerController",
+            "/Script/Engine.PlayerController:TestNestedArrayMarshalling",
+            "TestNestedArrayMarshalling",
+            "FUNC_Native | FUNC_Public",
+            [
+                new("Input", "ArrayProperty", 0, 1, "CPF_Parm", 16, Array: NestedIntArrayDescriptor),
+                new("ReturnValue", "ArrayProperty", 16, 1, "CPF_Parm | CPF_OutParm | CPF_ReturnParm", 16, Array: NestedIntArrayDescriptor)
             ]);
         private static readonly UnrealPropertyDescriptor PlayerNameProperty =
             new("/Script/Engine.PlayerController", "PlayerName", "StrProperty", 1600, 1, "CPF_Protected", 16);
@@ -129,6 +174,66 @@ public sealed class TestManagedMod : IRogueMod, IRogueModGameEvents
             new("/Script/Engine.PlayerController", "DisplayText", "TextProperty", 1664, 1, "CPF_Protected", 16);
         private static readonly UnrealPropertyDescriptor ScoresProperty =
             new("/Script/Engine.PlayerController", "Scores", "ArrayProperty", 1680, 1, "CPF_Protected", 16, Array: IntArrayDescriptor);
+        private static readonly UnrealPropertyDescriptor ScoreGroupsProperty =
+            new("/Script/Engine.PlayerController", "ScoreGroups", "ArrayProperty", 1696, 1, "CPF_Protected", 16, Array: NestedIntArrayDescriptor);
+        private static readonly UnrealPropertyDescriptor OptionalScoreProperty =
+            new("/Script/Engine.PlayerController", "OptionalScore", "OptionalProperty", 1712, 1, "CPF_Protected", 8)
+            {
+                Optional = IntOptionalDescriptor
+            };
+        private static readonly UnrealPropertyDescriptor OptionalUnsetScoreProperty =
+            new("/Script/Engine.PlayerController", "OptionalUnsetScore", "OptionalProperty", 1720, 1, "CPF_Protected", 8)
+            {
+                Optional = IntOptionalDescriptor
+            };
+        private static readonly UnrealFunctionDescriptor TestOptionalMarshallingFunction = new(
+            "/Script/Engine.PlayerController",
+            "/Script/Engine.PlayerController:TestOptionalMarshalling",
+            "TestOptionalMarshalling",
+            "FUNC_Native | FUNC_Public",
+            [
+                new("Input", "OptionalProperty", 0, 1, "CPF_Parm", 8) { Optional = IntOptionalDescriptor },
+                new("ReturnValue", "OptionalProperty", 8, 1, "CPF_Parm | CPF_OutParm | CPF_ReturnParm", 8)
+                {
+                    Optional = IntOptionalDescriptor
+                }
+            ]);
+        private static readonly UnrealPropertyDescriptor WeakControllerProperty =
+            new(
+                "/Script/Engine.PlayerController",
+                "WeakController",
+                "WeakObjectProperty:/Script/Engine.PlayerController",
+                1728,
+                1,
+                "CPF_Protected | CPF_UObjectWrapper",
+                8);
+        private static readonly UnrealFunctionDescriptor TestWeakObjectMarshallingFunction = new(
+            "/Script/Engine.PlayerController",
+            "/Script/Engine.PlayerController:TestWeakObjectMarshalling",
+            "TestWeakObjectMarshalling",
+            "FUNC_Native | FUNC_Public",
+            [
+                new("Input", "WeakObjectProperty:/Script/Engine.PlayerController", 0, 1, "CPF_Parm", 8),
+                new("ReturnValue", "WeakObjectProperty:/Script/Engine.PlayerController", 8, 1, "CPF_Parm | CPF_OutParm | CPF_ReturnParm", 8)
+            ]);
+        private static readonly UnrealPropertyDescriptor LazyControllerProperty =
+            new(
+                "/Script/Engine.PlayerController",
+                "LazyController",
+                "LazyObjectProperty:/Script/Engine.PlayerController",
+                1736,
+                1,
+                "CPF_Protected | CPF_UObjectWrapper",
+                24);
+        private static readonly UnrealFunctionDescriptor TestLazyObjectMarshallingFunction = new(
+            "/Script/Engine.PlayerController",
+            "/Script/Engine.PlayerController:TestLazyObjectMarshalling",
+            "TestLazyObjectMarshalling",
+            "FUNC_Native | FUNC_Public",
+            [
+                new("Input", "LazyObjectProperty:/Script/Engine.PlayerController", 0, 1, "CPF_Parm", 24),
+                new("ReturnValue", "LazyObjectProperty:/Script/Engine.PlayerController", 24, 1, "CPF_Parm | CPF_OutParm | CPF_ReturnParm", 24)
+            ]);
         private static readonly UnrealFunctionDescriptor TestStructMarshallingFunction = new(
             "/Script/Engine.PlayerController",
             "/Script/Engine.PlayerController:TestStructMarshalling",
@@ -176,6 +281,14 @@ public sealed class TestManagedMod : IRogueMod, IRogueModGameEvents
             return UnrealArrayValue.ToList<int>(result.ReturnValue, value => value.As<int>());
         }
 
+        public IReadOnlyList<IReadOnlyList<int>> TestNestedArrayMarshalling(IReadOnlyList<IReadOnlyList<int>> input)
+        {
+            var result = Call(
+                TestNestedArrayMarshallingFunction,
+                new UnrealArgument("Input", PackNestedArray(input)));
+            return UnpackNestedArray(result.ReturnValue);
+        }
+
         public TestVector TestStructMarshalling(TestVector input)
         {
             var result = Call(TestStructMarshallingFunction, new UnrealArgument("Input", input.ToUnrealValue()));
@@ -211,6 +324,84 @@ public sealed class TestManagedMod : IRogueMod, IRogueModGameEvents
             get => UnrealArrayValue.ToList<int>(ReadValue(ScoresProperty), value => value.As<int>());
             set => WriteValue(ScoresProperty, UnrealArrayValue.From(IntArrayDescriptor, value, UnrealValue.From));
         }
+
+        public IReadOnlyList<IReadOnlyList<int>> ScoreGroups
+        {
+            get => UnpackNestedArray(ReadValue(ScoreGroupsProperty));
+            set => WriteValue(ScoreGroupsProperty, PackNestedArray(value));
+        }
+
+        public UnrealOptional<int> OptionalScore
+        {
+            get => UnrealOptional<int>.FromUnrealValue(ReadValue(OptionalScoreProperty), value => value.As<int>());
+            set => WriteValue(
+                OptionalScoreProperty,
+                value.ToUnrealValue(IntOptionalDescriptor, UnrealValue.From));
+        }
+
+        public UnrealOptional<int> OptionalUnsetScore
+        {
+            get => UnrealOptional<int>.FromUnrealValue(ReadValue(OptionalUnsetScoreProperty), value => value.As<int>());
+            set => WriteValue(
+                OptionalUnsetScoreProperty,
+                value.ToUnrealValue(IntOptionalDescriptor, UnrealValue.From));
+        }
+
+        public UnrealOptional<int> TestOptionalMarshalling(UnrealOptional<int> input)
+        {
+            var result = Call(
+                TestOptionalMarshallingFunction,
+                new UnrealArgument(
+                    "Input",
+                    input.ToUnrealValue(IntOptionalDescriptor, UnrealValue.From)));
+            return UnrealOptional<int>.FromUnrealValue(result.ReturnValue, value => value.As<int>());
+        }
+
+        public TestPlayerController? WeakController
+        {
+            get => ReadObject(WeakControllerProperty, static (unreal, handle) => new TestPlayerController(unreal, handle));
+            set => WriteObject(WeakControllerProperty, value);
+        }
+
+        public TestPlayerController? TestWeakObjectMarshalling(TestPlayerController? input)
+        {
+            var result = Call(
+                TestWeakObjectMarshallingFunction,
+                new UnrealArgument("Input", UnrealValue.From(input?.Handle ?? UnrealObjectHandle.Null)));
+            return WrapObject(
+                result.ReturnValue,
+                static (unreal, handle) => new TestPlayerController(unreal, handle));
+        }
+
+        public UnrealLazyObjectReference<TestPlayerController> LazyController
+        {
+            get => UnrealLazyObjectReference<TestPlayerController>.FromUnrealValue(
+                ReadValue(LazyControllerProperty),
+                handle => new TestPlayerController(Unreal, handle));
+            set => WriteValue(LazyControllerProperty, value.ToUnrealValue());
+        }
+
+        public UnrealLazyObjectReference<TestPlayerController> TestLazyObjectMarshalling(
+            UnrealLazyObjectReference<TestPlayerController> input)
+        {
+            var result = Call(
+                TestLazyObjectMarshallingFunction,
+                new UnrealArgument("Input", input.ToUnrealValue()));
+            return UnrealLazyObjectReference<TestPlayerController>.FromUnrealValue(
+                result.ReturnValue,
+                handle => new TestPlayerController(Unreal, handle));
+        }
+
+        private static UnrealValue PackNestedArray(IReadOnlyList<IReadOnlyList<int>> values) =>
+            UnrealArrayValue.From(
+                NestedIntArrayDescriptor,
+                values,
+                group => UnrealArrayValue.From(IntArrayDescriptor, group, UnrealValue.From));
+
+        private static IReadOnlyList<IReadOnlyList<int>> UnpackNestedArray(UnrealValue value) =>
+            UnrealArrayValue.ToList<IReadOnlyList<int>>(
+                value,
+                group => UnrealArrayValue.ToList<int>(group, element => element.As<int>()));
     }
 
     public readonly record struct TestVector

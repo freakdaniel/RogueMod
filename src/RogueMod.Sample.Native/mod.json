@@ -4,5 +4,8 @@
   "version": "0.1.0",
   "kind": "native",
   "entryPoint": "dlls/main.dll",
-  "loaderId": "HelloNativeMod"
+  "loaderId": "HelloNativeMod",
+  "description": "Minimal native UE4SS mod packaged and managed by RogueMod.",
+  "defaultLanguage": "en",
+  "supportedLanguages": ["en"]
 }

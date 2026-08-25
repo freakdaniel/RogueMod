@@ -1,0 +1,11 @@
+<Solution>
+  <Folder Name="/build/">
+    <File Path="Directory.Build.props" />
+    <File Path="Directory.Packages.props" />
+    <File Path="global.json" />
+    <File Path="README.md" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/RogueMod.ManagedMod/RogueMod.ManagedMod.csproj" />
+  </Folder>
+</Solution>

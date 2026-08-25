@@ -4,6 +4,7 @@
   "steamAppId": 3228590,
   "unrealEngineVersion": "5.6.1",
   "executableRelativePath": "Valhalla/Binaries/Win64/DeadzoneSteam-Win64-Shipping.exe",
+  "pakRootRelativePath": "Valhalla/Content/Paks/~mods",
   "ue4ss": {
     "rootRelativePath": "Valhalla/Binaries/Win64/ue4ss",
     "proxyRelativePath": "Valhalla/Binaries/Win64/dwmapi.dll",

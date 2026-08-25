@@ -1,0 +1,7 @@
+<Project>
+  <PropertyGroup><ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally></PropertyGroup>
+  <ItemGroup>
+    <PackageVersion Include="RogueMod.Sdk" Version="ROGUEMOD_SDK_VERSION" />
+    <PackageVersion Include="DeadzoneRogue.Sdk" Version="DEADZONE_ROGUE_SDK_VERSION" />
+  </ItemGroup>
+</Project>

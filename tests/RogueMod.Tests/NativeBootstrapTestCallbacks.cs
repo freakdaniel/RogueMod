@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
@@ -11,7 +12,16 @@ internal static unsafe class NativeBootstrapTestCallbacks
     internal static bool StructPropertyWritten;
     internal static bool TextPropertyWritten;
     internal static bool ArrayPropertyWritten;
+    internal static bool NestedArrayPropertyWritten;
+    internal static bool OptionalPropertyWritten;
+    internal static bool OptionalUnsetPropertyWritten;
+    internal static bool WeakPropertyWritten;
+    internal static bool WeakNullPropertyWritten;
+    internal static bool LazyPropertyWritten;
+    internal static bool LazyNullPropertyWritten;
     private const uint IntArrayKind = 17U | (6U << 8);
+    private const uint NestedIntArrayKind = 17U | (17U << 8) | (6U << 16);
+    private const uint OptionalIntKind = 18U | (6U << 8);
 
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     internal static void CaptureLog(int level, char* message)
@@ -69,7 +79,8 @@ internal static unsafe class NativeBootstrapTestCallbacks
     }
 
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
-    internal static uint UnrealGetCapabilities() => (1U << 0) | (1U << 1) | (1U << 2) | (1U << 3) | (1U << 4);
+    internal static uint UnrealGetCapabilities() =>
+        (1U << 0) | (1U << 1) | (1U << 2) | (1U << 3) | (1U << 4) | (1U << 5) | (1U << 6) | (1U << 7) | (1U << 8);
 
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     internal static int UnrealInvokeZeroParameter(ulong handle, char* functionName) =>
@@ -100,6 +111,31 @@ internal static unsafe class NativeBootstrapTestCallbacks
         if (new string(propertyName) == "Scores" && propertyKind == IntArrayKind)
         {
             *value = AllocateIntArrayValue([7, 8, 9]);
+            return 0;
+        }
+        if (new string(propertyName) == "ScoreGroups" && propertyKind == NestedIntArrayKind)
+        {
+            *value = AllocateNestedIntArrayValue([[7, 8], [9]]);
+            return 0;
+        }
+        if (new string(propertyName) == "OptionalScore" && propertyKind == OptionalIntKind)
+        {
+            *value = AllocateOptionalIntValue(11);
+            return 0;
+        }
+        if (new string(propertyName) == "OptionalUnsetScore" && propertyKind == OptionalIntKind)
+        {
+            *value = new NativeUnrealValue { Kind = OptionalIntKind };
+            return 0;
+        }
+        if (new string(propertyName) == "WeakController" && propertyKind == 19)
+        {
+            *value = new NativeUnrealValue { Kind = 19, Data = 0x0000_0007_0000_002A };
+            return 0;
+        }
+        if (new string(propertyName) == "LazyController" && propertyKind == 20)
+        {
+            *value = AllocateLazyObjectValue();
             return 0;
         }
         if (new string(propertyName) != "bShouldPerformFullTickWhenPaused")
@@ -147,6 +183,53 @@ internal static unsafe class NativeBootstrapTestCallbacks
         {
             ArrayPropertyWritten = ReadIntArrayValue(*value).SequenceEqual([7, 8, 9]);
             return ArrayPropertyWritten ? 0 : -1;
+        }
+        if (handle == 0x0000_0007_0000_002A
+            && new string(propertyName) == "ScoreGroups"
+            && propertyKind == NestedIntArrayKind
+            && value != null)
+        {
+            NestedArrayPropertyWritten = NestedArraysEqual(ReadNestedIntArrayValue(*value), [[7, 8], [9]]);
+            return NestedArrayPropertyWritten ? 0 : -1;
+        }
+        if (handle == 0x0000_0007_0000_002A
+            && new string(propertyName) == "OptionalScore"
+            && propertyKind == OptionalIntKind
+            && value != null)
+        {
+            OptionalPropertyWritten = ReadOptionalIntValue(*value) == 11;
+            return OptionalPropertyWritten ? 0 : -1;
+        }
+        if (handle == 0x0000_0007_0000_002A
+            && new string(propertyName) == "OptionalUnsetScore"
+            && propertyKind == OptionalIntKind
+            && value != null)
+        {
+            OptionalUnsetPropertyWritten = value->Kind == OptionalIntKind
+                && value->Reserved == 0
+                && value->Data == 0;
+            return OptionalUnsetPropertyWritten ? 0 : -1;
+        }
+        if (handle == 0x0000_0007_0000_002A
+            && new string(propertyName) == "WeakController"
+            && propertyKind == 19
+            && value != null
+            && value->Kind == 19)
+        {
+            WeakPropertyWritten |= value->Data == 0x0000_0007_0000_002A;
+            WeakNullPropertyWritten |= value->Data == 0;
+            return 0;
+        }
+        if (handle == 0x0000_0007_0000_002A
+            && new string(propertyName) == "LazyController"
+            && propertyKind == 20
+            && value != null
+            && value->Kind == 20)
+        {
+            var wire = ReadLazyObjectWire(*value);
+            LazyPropertyWritten |= wire.SequenceEqual(CreateLazyObjectWire());
+            LazyNullPropertyWritten |= wire.All(static item => item == 0);
+            return 0;
         }
         PropertyWritten = handle == 0x0000_0007_0000_002A
             && new string(propertyName) == "bShouldPerformFullTickWhenPaused"
@@ -231,6 +314,54 @@ internal static unsafe class NativeBootstrapTestCallbacks
                 return -5;
             }
             parameters[1].Value = AllocateIntArrayValue([4, 5, 6]);
+            return 0;
+        }
+        if (name == "TestNestedArrayMarshalling")
+        {
+            if (parameterCount != 2 || parameters == null
+                || parameters[0].Kind != NestedIntArrayKind || parameters[0].Flags != 1 || parameters[0].Offset != 0 || parameters[0].Size != 16
+                || parameters[1].Kind != NestedIntArrayKind || parameters[1].Flags != 6 || parameters[1].Offset != 16 || parameters[1].Size != 16
+                || !NestedArraysEqual(ReadNestedIntArrayValue(parameters[0].Value), [[1, 2], [3]]))
+            {
+                return -5;
+            }
+            parameters[1].Value = AllocateNestedIntArrayValue([[4], [5, 6]]);
+            return 0;
+        }
+        if (name == "TestOptionalMarshalling")
+        {
+            if (parameterCount != 2 || parameters == null
+                || parameters[0].Kind != OptionalIntKind || parameters[0].Flags != 1 || parameters[0].Offset != 0 || parameters[0].Size != 8
+                || parameters[1].Kind != OptionalIntKind || parameters[1].Flags != 6 || parameters[1].Offset != 8 || parameters[1].Size != 8
+                || ReadOptionalIntValue(parameters[0].Value) != 7)
+            {
+                return -5;
+            }
+            parameters[1].Value = AllocateOptionalIntValue(13);
+            return 0;
+        }
+        if (name == "TestWeakObjectMarshalling")
+        {
+            if (parameterCount != 2 || parameters == null
+                || parameters[0].Kind != 19 || parameters[0].Flags != 1 || parameters[0].Offset != 0 || parameters[0].Size != 8
+                || parameters[0].Value.Data != 0x0000_0007_0000_002A
+                || parameters[1].Kind != 19 || parameters[1].Flags != 6 || parameters[1].Offset != 8 || parameters[1].Size != 8)
+            {
+                return -5;
+            }
+            parameters[1].Value = new NativeUnrealValue { Kind = 19, Data = 0x0000_0007_0000_002A };
+            return 0;
+        }
+        if (name == "TestLazyObjectMarshalling")
+        {
+            if (parameterCount != 2 || parameters == null
+                || parameters[0].Kind != 20 || parameters[0].Flags != 1 || parameters[0].Offset != 0 || parameters[0].Size != 24
+                || !ReadLazyObjectWire(parameters[0].Value).SequenceEqual(CreateLazyObjectWire())
+                || parameters[1].Kind != 20 || parameters[1].Flags != 6 || parameters[1].Offset != 24 || parameters[1].Size != 24)
+            {
+                return -5;
+            }
+            parameters[1].Value = AllocateLazyObjectValue();
             return 0;
         }
         if (name != "TestMarshalling" || parameterCount != 3 || parameters == null)
@@ -330,6 +461,104 @@ internal static unsafe class NativeBootstrapTestCallbacks
         }
         return result;
     }
+
+    private static NativeUnrealValue AllocateLazyObjectValue()
+    {
+        var wire = CreateLazyObjectWire();
+        var pointer = Marshal.AllocCoTaskMem(wire.Length);
+        Marshal.Copy(wire, 0, pointer, wire.Length);
+        return new NativeUnrealValue { Kind = 20, Reserved = (uint)wire.Length, Data = unchecked((ulong)pointer) };
+    }
+
+    private static byte[] CreateLazyObjectWire()
+    {
+        var wire = new byte[48];
+        BinaryPrimitives.WriteInt32LittleEndian(wire, 42);
+        BinaryPrimitives.WriteInt32LittleEndian(wire.AsSpan(4), 7);
+        BinaryPrimitives.WriteUInt32LittleEndian(wire.AsSpan(8), 0x1111_1111);
+        BinaryPrimitives.WriteUInt32LittleEndian(wire.AsSpan(12), 0x2222_2222);
+        BinaryPrimitives.WriteUInt32LittleEndian(wire.AsSpan(16), 0x3333_3333);
+        BinaryPrimitives.WriteUInt32LittleEndian(wire.AsSpan(20), 0x4444_4444);
+        BinaryPrimitives.WriteUInt64LittleEndian(wire.AsSpan(24), 0x0000_0007_0000_002A);
+        wire.AsSpan(8, 16).CopyTo(wire.AsSpan(32));
+        return wire;
+    }
+
+    private static byte[] ReadLazyObjectWire(NativeUnrealValue value)
+    {
+        if (value.Kind != 20 || value.Reserved != 48 || value.Data == 0)
+        {
+            return [];
+        }
+        var wire = new byte[48];
+        Marshal.Copy(unchecked((nint)value.Data), wire, 0, wire.Length);
+        return wire;
+    }
+
+    private static NativeUnrealValue AllocateOptionalIntValue(int value)
+    {
+        var pointer = Marshal.AllocCoTaskMem(sizeof(NativeUnrealValue));
+        *(NativeUnrealValue*)pointer = new NativeUnrealValue { Kind = 6, Data = unchecked((uint)value) };
+        return new NativeUnrealValue
+        {
+            Kind = OptionalIntKind,
+            Reserved = 1,
+            Data = unchecked((ulong)pointer)
+        };
+    }
+
+    private static int? ReadOptionalIntValue(NativeUnrealValue value)
+    {
+        if (value.Kind != OptionalIntKind || value.Reserved > 1
+            || (value.Reserved == 0 && value.Data != 0)
+            || (value.Reserved == 1 && value.Data == 0))
+        {
+            return null;
+        }
+        if (value.Reserved == 0)
+        {
+            return null;
+        }
+        var nested = *(NativeUnrealValue*)value.Data;
+        return nested.Kind == 6 ? unchecked((int)nested.Data) : null;
+    }
+
+    private static NativeUnrealValue AllocateNestedIntArrayValue(IReadOnlyList<IReadOnlyList<int>> values)
+    {
+        var bytes = checked(values.Count * sizeof(NativeUnrealValue));
+        var pointer = Marshal.AllocCoTaskMem(bytes);
+        var elements = (NativeUnrealValue*)pointer;
+        for (var index = 0; index < values.Count; index++)
+        {
+            elements[index] = AllocateIntArrayValue(values[index]);
+        }
+        return new NativeUnrealValue
+        {
+            Kind = NestedIntArrayKind,
+            Reserved = checked((uint)values.Count),
+            Data = unchecked((ulong)pointer)
+        };
+    }
+
+    private static IReadOnlyList<IReadOnlyList<int>> ReadNestedIntArrayValue(NativeUnrealValue value)
+    {
+        if (value.Kind != NestedIntArrayKind || (value.Reserved != 0 && value.Data == 0))
+        {
+            return [];
+        }
+        var result = new IReadOnlyList<int>[checked((int)value.Reserved)];
+        var elements = (NativeUnrealValue*)value.Data;
+        for (var index = 0; index < result.Length; index++)
+        {
+            result[index] = ReadIntArrayValue(elements[index]);
+        }
+        return result;
+    }
+
+    private static bool NestedArraysEqual(
+        IReadOnlyList<IReadOnlyList<int>> left,
+        IReadOnlyList<IReadOnlyList<int>> right) =>
+        left.Count == right.Count && left.Zip(right).All(pair => pair.First.SequenceEqual(pair.Second));
 
     [StructLayout(LayoutKind.Sequential)]
     internal struct HostApi

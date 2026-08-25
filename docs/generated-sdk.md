@@ -10,13 +10,38 @@ The SDK layer hides raw `UObject` lookup, `FProperty` traversal, field offsets, 
 4. `RogueMod.Runtime` validates capabilities and sends operations to the native bridge.
 5. The bridge validates live buffer metadata and performs the Unreal call.
 
-JMAP is an importer input, not a public mod API. Changes to its external schema remain isolated in `RogueMod.Sdk`.
+JMAP is an importer input, not a public mod API. Changes to its external schema remain isolated in `RogueMod.Sdk`; mod authors consume only the maintained `DeadzoneRogue.Sdk` NuGet package.
 
-## Create a dump
+## Mod author workflow
 
-The bundled UE4SS dump key uses a numpad key. RogueMod includes `src/RogueMod.Tooling.SdkDumper`, which binds `Ctrl+F5` and calls `DumpJMAP(true, true)`. Trigger it after the main menu has loaded. Blueprint types are included while unnecessary CDO SDK values are omitted to reduce dump size and memory pressure.
+Add the authoring targets and typed game SDK to the mod project:
 
-Generate source from the newest dump in the game directory:
+```xml
+<ItemGroup>
+  <PackageReference Include="RogueMod.Sdk" Version="0.1.0" />
+  <PackageReference Include="DeadzoneRogue.Sdk" Version="0.1.0" />
+</ItemGroup>
+```
+
+No local game installation, UE4SS developer build, dump hotkey, or JMAP file is required. `PackageRogueMod` excludes `DeadzoneRogue.Sdk.dll` from the mod output. The matching assembly is installed once in `<GameRoot>/RogueMod/runtime/shared` and resolved into every collectible mod context by the runtime. Exact assembly-version matching prevents a mod from silently running against an incompatible generated SDK.
+
+## Maintainer capture
+
+The pinned asset and game compatibility are recorded in `config/GameSdk/deadzone-rogue.json`. `prepare-game-sdk.ps1` verifies the installed executable version, downloads the exact official UE4SS archive, validates its SHA-256, installs the game-specific `VTableLayout.ini`, disables unrelated bundled mods, and enables the maintainer dumper. The dumper schedules one automatic snapshot after GameState initialization; `Ctrl+F5` remains only as a fallback.
+
+```powershell
+./scripts/prepare-game-sdk.ps1 `
+  -GamePath 'E:\Steam\steamapps\common\Deadzone Rogue' `
+  -InstallRuntime
+
+./scripts/build-game-sdk.ps1 `
+  -GamePath 'E:\Steam\steamapps\common\Deadzone Rogue' `
+  -WaitForDumpSeconds 900
+```
+
+The build script waits until UE4SS has closed the snapshot file, generates a standalone CPM-enabled project, builds `.nupkg`/`.snupkg`, installs the game SDK into the shared runtime directory, updates the runtime archive metadata, and disables the dumper. Raw JMAP and generated source remain under ignored artifact paths.
+
+For generator debugging, invoke the lower-level command directly:
 
 ```bash
 dotnet run --project src/RogueMod.Cli -c Release -- generate-sdk \
@@ -36,7 +61,7 @@ dotnet pack .artifacts/sdk/deadzone-rogue/DeadzoneRogue.Sdk.csproj \
   -c Release --no-build -o .artifacts/sdk/packages
 ```
 
-Inside this repository the generated project references `src/RogueMod.Abstractions`. Outside the repository it falls back to the `RogueMod.Abstractions` package dependency. Generated sources and packages belong under `.artifacts`; reusable generator and authoring code stays under `src/RogueMod.Sdk`.
+Inside this repository the generated project can reference `src/RogueMod.Abstractions`. A standalone release uses its own `Directory.Packages.props` and the `RogueMod.Abstractions` package dependency. Generated sources and packages belong under `.artifacts`; reusable generator and authoring code stays under `src/RogueMod.Sdk`.
 
 ## Generated API
 
@@ -63,8 +88,8 @@ if (player is not null)
 IReadOnlyList<BP_Player> allPlayers = context.Unreal.FindAll<BP_Player>();
 ```
 
-ABI 10 supports single and multi-object discovery; bool, integer, enum, float, double, object, `FString`, `FName`, `FText`, POD script structs, and one-dimensional `TArray` values in properties and `UFunction` input/return/out parameters. `FindAll<T>` uses UE4SS class matching and returns generated wrappers around serial-validated handles, never raw pointers. String-like values are exposed as C# `string`; arrays are exposed as `IReadOnlyList<T>`. Descriptors include offsets, element sizes, bool masks, nested struct layout, and array inner metadata from JMAP. Before `ProcessEvent`, the bridge verifies the live parameter count, total buffer size, return offset, live parameter offsets and sizes, and descriptor bounds.
+ABI 10 supports single and multi-object discovery; bool, integer, enum, float, double, strong, weak, and lazy object references, `FString`, `FName`, `FText`, POD script structs, and capability-gated `TArray` and `TOptional` values in properties and `UFunction` input/return/out parameters. Arrays may contain other arrays up to three `TArray` containers deep. `FindAll<T>` uses UE4SS class matching and returns generated wrappers around serial-validated handles, never raw pointers. String-like values are exposed as C# `string`; arrays are exposed recursively as `IReadOnlyList<T>`; optionals use `UnrealOptional<T>` to preserve set/unset. Weak references use the same nullable generated wrapper shape as strong references. Lazy references use `UnrealLazyObjectReference<T>` so their persistent `UnrealGuid` survives while `Target` is unloaded; neither form roots the target. Descriptors include offsets, element sizes, bool masks, nested struct layout, recursive array inner metadata, and optional inner metadata from JMAP. Before `ProcessEvent`, the bridge verifies the live parameter count, total buffer size, return offset, live parameter offsets and sizes, and descriptor bounds.
 
 The generator emits an immutable C# record struct plus `Descriptor`, `ToUnrealValue`, and `FromUnrealValue` adapters for JMAP structs marked both `STRUCT_IsPlainOldData` and `STRUCT_NoDestructor`. The struct must have no reflected superclass, all fields must be supported scalar or nested POD values, and every field must fit the declared native size. Marshalling is field-wise and therefore does not rely on CLR layout.
 
-The generator emits typed array adapters only when the element is a supported scalar, enum, object/class reference, string-like value, or generated POD struct. Unsupported structs, nested arrays, weak/soft object arrays, UTF-8/ANSI string properties, maps, sets, and optionals are represented as `UnrealValue`. Calling such a member produces an explicit `NotSupportedException` rather than an unsafe buffer write.
+The generator emits typed array adapters only when the leaf element is a supported scalar, enum, strong object/class reference, string-like value, generated POD struct, or another supported array within the depth limit. It emits `UnrealOptional<T>` adapters for supported scalar, enum, strong object/class, string-like, and POD struct values. Standalone weak object properties and function parameters use typed nullable wrappers; standalone lazy properties and parameters use identity-preserving `UnrealLazyObjectReference<T>`. Nested containers inside an optional, unsupported structs, weak/lazy-object arrays, soft references, UTF-8/ANSI string properties, maps, and sets still produce explicit runtime failures rather than unsafe buffer writes. See [Reflection API status](reflection-api.md) for the remaining type families.

@@ -76,7 +76,11 @@ public enum UnrealReflectionCapabilities
     PropertyRead = 1 << 1,
     PropertyWrite = 1 << 2,
     FunctionInvocation = 1 << 3,
-    ObjectEnumeration = 1 << 4
+    ObjectEnumeration = 1 << 4,
+    NestedArrays = 1 << 5,
+    OptionalValues = 1 << 6,
+    WeakObjectReferences = 1 << 7,
+    LazyObjectReferences = 1 << 8
 }
 
 public readonly record struct UnrealObjectHandle(ulong Value)
@@ -99,7 +103,21 @@ public sealed record UnrealPropertyDescriptor(
     int ByteMask = 0,
     int FieldMask = 0,
     UnrealStructDescriptor? Struct = null,
-    UnrealArrayDescriptor? Array = null);
+    UnrealArrayDescriptor? Array = null)
+{
+    /// <summary>Inner-value metadata when this property is a TOptional.</summary>
+    public UnrealOptionalDescriptor? Optional { get; init; }
+}
+
+/// <summary>The four native 32-bit components of an Unreal FGuid.</summary>
+public readonly record struct UnrealGuid(uint A, uint B, uint C, uint D)
+{
+    public static UnrealGuid Empty => default;
+
+    public bool IsEmpty => A == 0 && B == 0 && C == 0 && D == 0;
+
+    public override string ToString() => $"{A:X8}-{B:X8}-{C:X8}-{D:X8}";
+}
 
 /// <summary>Runtime layout metadata for one reflected UFunction parameter.</summary>
 public sealed record UnrealParameterDescriptor(
@@ -115,6 +133,9 @@ public sealed record UnrealParameterDescriptor(
     UnrealStructDescriptor? Struct = null,
     UnrealArrayDescriptor? Array = null)
 {
+    /// <summary>Inner-value metadata when this parameter is a TOptional.</summary>
+    public UnrealOptionalDescriptor? Optional { get; init; }
+
     public bool IsOutput => HasFlag("CPF_OutParm");
 
     public bool IsReturn => HasFlag("CPF_ReturnParm");
@@ -176,7 +197,14 @@ public sealed record UnrealArrayDescriptor(
     int ElementByteOffset = 0,
     int ElementByteMask = 0,
     int ElementFieldMask = 0,
-    UnrealStructDescriptor? ElementStruct = null);
+    UnrealStructDescriptor? ElementStruct = null)
+{
+    /// <summary>Inner-value metadata when this parameter is a TOptional.</summary>
+    public UnrealOptionalDescriptor? Optional { get; init; }
+
+    /// <summary>Element metadata when this array contains another TArray.</summary>
+    public UnrealArrayDescriptor? ElementArray { get; init; }
+}
 
 /// <summary>A managed list transported through a generated TArray adapter.</summary>
 public sealed record UnrealArrayValue(
@@ -199,6 +227,148 @@ public sealed record UnrealArrayValue(
         ArgumentNullException.ThrowIfNull(decode);
         var transported = value.As<UnrealArrayValue>();
         return transported.Elements.Select(decode).ToArray();
+    }
+}
+
+/// <summary>Inner-value metadata for an Unreal TOptional.</summary>
+public sealed record UnrealOptionalDescriptor(
+    string ValueUnrealType,
+    int ValueSize,
+    int ValueByteOffset = 0,
+    int ValueByteMask = 0,
+    int ValueFieldMask = 0,
+    UnrealStructDescriptor? ValueStruct = null);
+
+/// <summary>A set or unset value transported through a generated TOptional adapter.</summary>
+public sealed record UnrealOptionalValue(
+    UnrealOptionalDescriptor Descriptor,
+    bool IsSet,
+    UnrealValue Value);
+
+/// <summary>
+/// Identity-preserving transport for an Unreal FLazyObjectPtr. The persistent GUID remains
+/// available even when the weak target is currently unloaded.
+/// </summary>
+public sealed class UnrealLazyObjectValue
+{
+    public const int NativeStorageSize = 24;
+
+    private readonly byte[] nativeStorage;
+
+    public UnrealLazyObjectValue(
+        UnrealGuid objectId,
+        UnrealObjectHandle resolvedHandle,
+        ReadOnlySpan<byte> nativeStorage)
+    {
+        if (nativeStorage.Length != NativeStorageSize)
+        {
+            throw new ArgumentException(
+                $"An Unreal lazy object reference requires exactly {NativeStorageSize} bytes of native storage.",
+                nameof(nativeStorage));
+        }
+
+        ObjectId = objectId;
+        ResolvedHandle = resolvedHandle;
+        this.nativeStorage = nativeStorage.ToArray();
+    }
+
+    public UnrealGuid ObjectId { get; }
+
+    public UnrealObjectHandle ResolvedHandle { get; }
+
+    public bool IsNull => ObjectId.IsEmpty && ResolvedHandle.IsNull;
+
+    public byte[] CopyNativeStorage() => (byte[])nativeStorage.Clone();
+
+    public static UnrealLazyObjectValue Null { get; } =
+        new(UnrealGuid.Empty, UnrealObjectHandle.Null, new byte[NativeStorageSize]);
+}
+
+/// <summary>
+/// A typed Unreal lazy reference. Unlike a weak reference, it retains its persistent object
+/// identity while the target is unloaded; it does not load or keep the target alive.
+/// </summary>
+public sealed class UnrealLazyObjectReference<T> where T : UnrealObject
+{
+    private readonly UnrealLazyObjectValue transported;
+
+    private UnrealLazyObjectReference(UnrealLazyObjectValue transported, T? target)
+    {
+        this.transported = transported;
+        Target = target;
+    }
+
+    public UnrealGuid ObjectId => transported.ObjectId;
+
+    public T? Target { get; }
+
+    public bool IsNull => transported.IsNull;
+
+    public bool IsPending => !IsNull && Target is null;
+
+    public static UnrealLazyObjectReference<T> Null { get; } =
+        new(UnrealLazyObjectValue.Null, null);
+
+    public UnrealValue ToUnrealValue() => UnrealValue.From(transported);
+
+    public static UnrealLazyObjectReference<T> FromUnrealValue(
+        UnrealValue value,
+        Func<UnrealObjectHandle, T> factory)
+    {
+        ArgumentNullException.ThrowIfNull(factory);
+        var transported = value.As<UnrealLazyObjectValue>();
+        var target = transported.ResolvedHandle.IsNull
+            ? null
+            : factory(transported.ResolvedHandle);
+        return new UnrealLazyObjectReference<T>(transported, target);
+    }
+}
+
+/// <summary>
+/// Strongly typed TOptional value. Unlike nullable annotations, this preserves Unreal's
+/// set/unset state even when <typeparamref name="T"/> is itself nullable.
+/// </summary>
+public readonly record struct UnrealOptional<T>
+{
+    private readonly T? value;
+
+    private UnrealOptional(bool isSet, T? value)
+    {
+        IsSet = isSet;
+        this.value = value;
+    }
+
+    public bool IsSet { get; }
+
+    public T Value => IsSet
+        ? value!
+        : throw new InvalidOperationException("An unset Unreal TOptional has no value.");
+
+    public static UnrealOptional<T> Unset => default;
+
+    public static UnrealOptional<T> FromValue(T value) => new(true, value);
+
+    public UnrealValue ToUnrealValue(
+        UnrealOptionalDescriptor descriptor,
+        Func<T, UnrealValue> encode)
+    {
+        ArgumentNullException.ThrowIfNull(descriptor);
+        ArgumentNullException.ThrowIfNull(encode);
+        return UnrealValue.From(new UnrealOptionalValue(
+            descriptor,
+            IsSet,
+            IsSet ? encode(value!) : UnrealValue.Null));
+    }
+
+    public static UnrealOptional<T> FromUnrealValue(
+        UnrealValue value,
+        Func<UnrealValue, T> decode)
+    {
+        ArgumentNullException.ThrowIfNull(decode);
+        var transported = value.As<UnrealOptionalValue>();
+        return transported.IsSet
+            ? FromValue(decode(transported.Value))
+            : Unset;
     }
 }
 

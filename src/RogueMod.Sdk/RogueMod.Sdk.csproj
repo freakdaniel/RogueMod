@@ -5,6 +5,27 @@
     <RootNamespace>RogueMod.Sdk</RootNamespace>
     <PackageId>RogueMod.Sdk</PackageId>
     <Version>0.1.0</Version>
+    <Title>RogueMod authoring SDK</Title>
+    <Authors>RogueMod contributors</Authors>
     <Description>JMAP importer and strongly typed game SDK generator for RogueMod.</Description>
+    <PackageTags>deadzone-rogue;modding;ue4ss;unreal-engine;sdk</PackageTags>
+    <PackageProjectUrl>https://github.com/freakdaniel/RogueMod</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/freakdaniel/RogueMod.git</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
   </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../RogueMod.Abstractions/RogueMod.Abstractions.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="README.md" Pack="true" PackagePath="\" />
+    <None Update="Managed/RogueMod.Sdk.props" Pack="true" PackagePath="build/RogueMod.Sdk.props" />
+    <None Update="Managed/RogueMod.ManagedMod.targets" Pack="true" PackagePath="build/RogueMod.Sdk.targets" />
+    <None Update="Native/include/RogueMod/NativeMod.hpp" Pack="true" PackagePath="build/native/include/RogueMod/NativeMod.hpp" />
+    <None Update="Native/include/UE4SS/CppUserModBase.hpp" Pack="true" PackagePath="build/native/include/UE4SS/CppUserModBase.hpp" />
+  </ItemGroup>
 </Project>

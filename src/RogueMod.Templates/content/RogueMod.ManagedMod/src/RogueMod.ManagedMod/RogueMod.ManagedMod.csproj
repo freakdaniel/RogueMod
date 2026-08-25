@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>RogueMod.ManagedMod</AssemblyName>
+    <RootNamespace>RogueMod.ManagedMod</RootNamespace>
+    <Version>0.1.0</Version>
+    <RogueModModId>sample.managed-mod</RogueModModId>
+    <RogueModModName>Sample managed mod</RogueModModName>
+    <RogueModEntryPoint>RogueMod.ManagedMod.Mod</RogueModEntryPoint>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="RogueMod.Sdk" ExcludeAssets="runtime" />
+    <PackageReference Include="DeadzoneRogue.Sdk" ExcludeAssets="runtime" />
+  </ItemGroup>
+</Project>

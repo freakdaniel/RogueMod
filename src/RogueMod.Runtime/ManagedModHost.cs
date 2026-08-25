@@ -88,6 +88,23 @@ public sealed class ManagedModHost : IAsyncDisposable
         }
     }
 
+    public static ValueTask<ManagedModHost> LoadAsync(
+        ModManifest manifest,
+        string modDirectory,
+        IModContext context,
+        string sharedAssemblyDirectory,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sharedAssemblyDirectory);
+        if (!Directory.Exists(sharedAssemblyDirectory))
+        {
+            throw new DirectoryNotFoundException($"Shared managed assembly directory does not exist: {sharedAssemblyDirectory}");
+        }
+
+        ManagedSharedAssemblyCatalog.RegisterDirectory(sharedAssemblyDirectory);
+        return LoadAsync(manifest, modDirectory, context, cancellationToken);
+    }
+
     public async ValueTask UnloadAsync(CancellationToken cancellationToken = default)
     {
         var instance = Interlocked.Exchange(ref _instance, null);

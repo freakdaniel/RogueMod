@@ -1,0 +1,10 @@
+{
+  "id": "roguemod.live-reflection-probe",
+  "name": "RogueMod live reflection probe",
+  "version": "0.1.0",
+  "kind": "managed",
+  "entryPoint": "dlls/DeadzoneLiveReflectionProbe.dll::RogueMod.Tests.Live.DeadzoneLiveReflectionProbe",
+  "description": "Internal in-game verification probe for RogueMod reflection transports.",
+  "defaultLanguage": "en",
+  "supportedLanguages": ["en"]
+}

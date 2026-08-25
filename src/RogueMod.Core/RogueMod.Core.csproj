@@ -7,5 +7,25 @@
   <ItemGroup>
     <ProjectReference Include="../RogueMod.Abstractions/RogueMod.Abstractions.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="../RogueMod.Templates/content/RogueMod.ManagedMod/RogueMod.ManagedMod.slnx"
+                      LogicalName="RogueMod.Templates.Managed.Solution" />
+    <EmbeddedResource Include="../RogueMod.Templates/content/RogueMod.ManagedMod/Directory.Build.props"
+                      LogicalName="RogueMod.Templates.Managed.DirectoryBuildProps" />
+    <EmbeddedResource Include="../RogueMod.Templates/content/RogueMod.ManagedMod/Directory.Packages.props"
+                      LogicalName="RogueMod.Templates.Managed.DirectoryPackagesProps" />
+    <EmbeddedResource Include="../RogueMod.Templates/content/RogueMod.ManagedMod/global.json"
+                      LogicalName="RogueMod.Templates.Managed.GlobalJson" />
+    <EmbeddedResource Include="../RogueMod.Templates/content/RogueMod.ManagedMod/gitignore.txt"
+                      LogicalName="RogueMod.Templates.Managed.GitIgnore" />
+    <EmbeddedResource Include="../RogueMod.Templates/content/RogueMod.ManagedMod/README.md"
+                      LogicalName="RogueMod.Templates.Managed.Readme" />
+    <EmbeddedResource Include="../RogueMod.Templates/content/RogueMod.ManagedMod/src/RogueMod.ManagedMod/RogueMod.ManagedMod.csproj"
+                      LogicalName="RogueMod.Templates.Managed.Project" />
+    <EmbeddedResource Include="../RogueMod.Templates/content/RogueMod.ManagedMod/src/RogueMod.ManagedMod/Mod.cs"
+                      LogicalName="RogueMod.Templates.Managed.ModSource" />
+    <EmbeddedResource Include="../RogueMod.Templates/content/RogueMod.ManagedMod/src/RogueMod.ManagedMod/mod.json"
+                      LogicalName="RogueMod.Templates.Managed.Manifest" />
+  </ItemGroup>
 </Project>
 

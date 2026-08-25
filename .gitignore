@@ -10,3 +10,5 @@
 .deps/
 .tools/
 .xwin-cache/
+.s*/
+.c*/

@@ -1,0 +1,6 @@
+<Project>
+  <PropertyGroup>
+    <RogueModSdkPackageRoot>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)..'))</RogueModSdkPackageRoot>
+    <RogueModNativeIncludeDir>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)native/include'))</RogueModNativeIncludeDir>
+  </PropertyGroup>
+</Project>

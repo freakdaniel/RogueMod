@@ -5,11 +5,21 @@
     <AssemblyName>RogueMod.Tests</AssemblyName>
     <RootNamespace>RogueMod.Tests</RootNamespace>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../../src/RogueMod.Core/RogueMod.Core.csproj" />
     <ProjectReference Include="../../src/RogueMod.Sdk/RogueMod.Sdk.csproj" />
     <ProjectReference Include="../../src/RogueMod.Runtime/RogueMod.Runtime.csproj" />
     <ProjectReference Include="../Fixtures/TestManagedMod/TestManagedMod.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit.runner.visualstudio">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="xunit.v3.mtp-off" />
   </ItemGroup>
 </Project>

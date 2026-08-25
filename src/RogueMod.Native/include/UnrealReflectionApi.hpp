@@ -54,6 +54,7 @@ namespace RogueMod
 
       private:
         using find_first_of_fn = void*(__cdecl*)(const wchar_t*);
+        using static_find_object_fn = void*(__cdecl*)(void*, void*, const wchar_t*, bool);
         using find_all_of_fn = void(__cdecl*)(const wchar_t*, std::vector<void*>&);
         using get_internal_index_fn = std::int32_t(__cdecl*)(const void*);
         using index_to_object_fn = void*(__cdecl*)(std::int32_t);
@@ -93,6 +94,16 @@ namespace RogueMod
         using get_first_property_fn = void*(__cdecl*)(void*);
         using get_next_field_as_property_fn = void*(__cdecl*)(void*);
         using get_array_inner_fn = void**(__cdecl*)(void*);
+        using get_optional_value_property_fn = void**(__cdecl*)(const void*);
+        using optional_is_set_fn = bool(__cdecl*)(const void*, const void*);
+        using optional_get_value_pointer_for_read_if_set_fn = const void*(__cdecl*)(const void*, const void*);
+        using optional_mark_set_and_get_initialized_value_pointer_fn = void*(__cdecl*)(const void*, void*);
+        using optional_mark_unset_fn = void(__cdecl*)(const void*, void*);
+        using fweak_object_default_constructor_fn = void*(__cdecl*)(void*);
+        using fweak_object_get_fn = void*(__cdecl*)(const void*);
+        using fweak_object_assign_fn = void(__cdecl*)(void*, const void*);
+        using fweak_object_reset_fn = void(__cdecl*)(void*);
+        using lazy_object_set_value_fn = void(__cdecl*)(void*, const void*);
         using fmemory_malloc_fn = void*(__cdecl*)(std::size_t, std::uint32_t);
         using fmemory_free_fn = void(__cdecl*)(void*);
 
@@ -109,10 +120,12 @@ namespace RogueMod
             std::uint32_t encoded_kind,
             const UnrealValue& value) const;
         void destroy_array_value(void* property, void* address, std::uint32_t encoded_kind) const;
+        void destroy_optional_value(void* property, void* address) const;
 
         std::atomic_bool m_ready{};
         bool m_resolved{};
         find_first_of_fn m_find_first_of{};
+        static_find_object_fn m_static_find_object{};
         find_all_of_fn m_find_all_of{};
         get_internal_index_fn m_get_internal_index{};
         index_to_object_fn m_index_to_object{};
@@ -149,6 +162,16 @@ namespace RogueMod
         get_first_property_fn m_get_first_property{};
         get_next_field_as_property_fn m_get_next_field_as_property{};
         get_array_inner_fn m_get_array_inner{};
+        get_optional_value_property_fn m_get_optional_value_property{};
+        optional_is_set_fn m_optional_is_set{};
+        optional_get_value_pointer_for_read_if_set_fn m_optional_get_value_pointer_for_read_if_set{};
+        optional_mark_set_and_get_initialized_value_pointer_fn m_optional_mark_set_and_get_initialized_value_pointer{};
+        optional_mark_unset_fn m_optional_mark_unset{};
+        fweak_object_default_constructor_fn m_fweak_object_default_constructor{};
+        fweak_object_get_fn m_fweak_object_get{};
+        fweak_object_assign_fn m_fweak_object_assign{};
+        fweak_object_reset_fn m_fweak_object_reset{};
+        lazy_object_set_value_fn m_lazy_object_set_value{};
         fmemory_malloc_fn m_fmemory_malloc{};
         fmemory_free_fn m_fmemory_free{};
     };

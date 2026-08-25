@@ -264,14 +264,16 @@ namespace
     class ManagedRuntime
     {
     public:
-        bool start(const std::filesystem::path& mod_root)
+        bool start(
+            const std::filesystem::path& roguemod_root,
+            const std::filesystem::path& game_mods_root)
         {
             if (m_shutdown != nullptr)
             {
                 return true;
             }
 
-            const auto runtime_root = mod_root / L"runtime";
+            const auto runtime_root = roguemod_root / L"runtime";
             const auto managed_root = runtime_root / L"managed";
             const auto hostfxr_path = find_hostfxr(runtime_root / L"dotnet");
             if (hostfxr_path.empty())
@@ -362,18 +364,11 @@ namespace
                 return false;
             }
 
-            auto game_root = mod_root;
-            for (std::uint32_t level = 0; level < 6; ++level)
-            {
-                game_root = game_root.parent_path();
-            }
-            const auto game_mods_root = game_root / L"Mods";
-
             RogueMod::HostApi api{
                 sizeof(RogueMod::HostApi),
                 RogueMod::HostAbiVersion,
                 &log_from_managed,
-                mod_root.c_str(),
+                roguemod_root.c_str(),
                 L"deadzone-rogue-steam",
                 &unreal_is_available,
                 &unreal_find_first_of,
@@ -458,8 +453,15 @@ namespace
                 return;
             }
 
-            const auto mod_root = module.parent_path().parent_path();
-            LogPath = mod_root / L"RogueMod.log";
+            const auto bridge_root = module.parent_path().parent_path();
+            auto game_root = bridge_root;
+            for (std::uint32_t level = 0; level < 6; ++level)
+            {
+                game_root = game_root.parent_path();
+            }
+            const auto roguemod_root = game_root / L"RogueMod";
+            const auto game_mods_root = game_root / L"Mods";
+            LogPath = roguemod_root / L"RogueMod.log";
             log_bridge(2, L"Starting RogueMod managed runtime.");
             const auto ue4ss_module = GetModuleHandleW(L"UE4SS.dll");
             if (UnrealReflection.resolve(ue4ss_module))
@@ -470,7 +472,7 @@ namespace
             {
                 log_bridge(3, L"UE4SS reflection exports are unavailable for this build.");
             }
-            if (m_runtime.start(mod_root))
+            if (m_runtime.start(roguemod_root, game_mods_root))
             {
                 m_runtime.dispatch_game_event(managed_game_event::program_started);
             }

@@ -35,8 +35,43 @@ if [[ -n "$bridge" ]]; then
     cp "$bridge" "$package_root/dlls/main.dll"
 else
     printf '%s\n' \
-        'Managed runtime was packaged, but the native bridge has not been built yet.' \
+        'The native bridge has not been built, so a usable runtime package cannot be created.' \
         'Run scripts/native-toolchain.sh build and package again.' >&2
+    exit 1
 fi
 
-printf 'Runtime pack: %s\n' "$package_root"
+hostfxr=$(find "$dotnet_root/host/fxr" -type f -name hostfxr.dll -print -quit 2>/dev/null || true)
+coreclr=$(find "$dotnet_root/shared/Microsoft.NETCore.App" -type f -name coreclr.dll -print -quit 2>/dev/null || true)
+for required in \
+    "$package_root/dlls/main.dll" \
+    "$managed_root/RogueMod.Runtime.dll" \
+    "$managed_root/RogueMod.Runtime.runtimeconfig.json" \
+    "$hostfxr" \
+    "$coreclr"; do
+    if [[ -z "$required" || ! -f "$required" ]]; then
+        printf 'Runtime package validation failed: %s\n' "${required:-missing private runtime component}" >&2
+        exit 1
+    fi
+done
+
+bridge_sha256=$(sha256sum "$package_root/dlls/main.dll" | cut -d ' ' -f 1)
+managed_sha256=$(sha256sum "$managed_root/RogueMod.Runtime.dll" | cut -d ' ' -f 1)
+cat > "$package_root/runtime-package.json" <<EOF
+{
+  "schemaVersion": 1,
+  "target": "win-x64",
+  "compatibleHosts": ["windows", "proton"],
+  "dotnetRuntimeVersion": "$runtime_version",
+  "bridgeSha256": "$bridge_sha256",
+  "managedRuntimeSha256": "$managed_sha256"
+}
+EOF
+
+archive="$repository_root/.artifacts/runtime/RogueMod.Runtime-win-x64.zip"
+rm -f "$archive"
+(
+    cd "$(dirname "$package_root")"
+    zip -qr "$archive" "$(basename "$package_root")"
+)
+
+printf 'Runtime package: %s\nRuntime archive: %s\n' "$package_root" "$archive"

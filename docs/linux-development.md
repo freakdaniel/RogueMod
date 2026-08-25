@@ -28,7 +28,7 @@ RogueMod is pinned to RE-UE4SS commit `a1e7f571c789f63f3de6773d056be6f778c14dc8`
 Install host tools:
 
 ```bash
-sudo apt install cmake ninja-build clang lld llvm
+sudo apt install cmake ninja-build clang lld llvm zip unzip
 rustup target add x86_64-pc-windows-msvc
 scripts/native-toolchain.sh doctor
 ```
@@ -74,7 +74,7 @@ The managed runtime is framework-dependent but carries a private Windows .NET Ru
 scripts/package-runtime.sh Release
 ```
 
-The script downloads the pinned `dotnet-runtime-10.0.10-win-x64.zip`, verifies its SHA-512, publishes managed runtime files, and copies the built bridge into `.artifacts/runtime/RogueMod`.
+The script downloads the pinned `dotnet-runtime-10.0.10-win-x64.zip`, verifies its SHA-512, publishes managed runtime files, and copies the built bridge into `.artifacts/runtime/RogueMod`. Packaging fails if the bridge or private runtime components are missing. A validated `.artifacts/runtime/RogueMod.Runtime-win-x64.zip` release archive is produced alongside the unpacked directory.
 
 The same package is installed on Windows and Linux/Proton:
 

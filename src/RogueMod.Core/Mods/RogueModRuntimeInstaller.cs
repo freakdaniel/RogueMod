@@ -5,103 +5,150 @@ namespace RogueMod.Core.Mods;
 
 public sealed partial class RogueModRuntimeInstaller
 {
-    public RogueModRuntimeInstallResult Install(GameProfile profile, string gameRoot, string packageDirectory, bool replace = false)
+    public RogueModRuntimeInstallResult Install(
+        GameProfile profile,
+        string gameRoot,
+        string packageDirectory,
+        bool replace = false)
     {
         ArgumentNullException.ThrowIfNull(profile);
+        ArgumentException.ThrowIfNullOrWhiteSpace(gameRoot);
+        ArgumentException.ThrowIfNullOrWhiteSpace(packageDirectory);
         var packageRoot = Path.GetFullPath(packageDirectory);
         ValidatePackage(packageRoot);
 
         var normalizedGameRoot = Path.GetFullPath(gameRoot);
         var gameModsRoot = Resolve(normalizedGameRoot, RogueModLayout.GameModsDirectoryName);
-        var modsRoot = Resolve(normalizedGameRoot, profile.Ue4ss.RootRelativePath, "Mods");
+        var ue4ssModsRoot = Resolve(normalizedGameRoot, profile.Ue4ss.RootRelativePath, "Mods");
+        var runtimeRoot = Resolve(normalizedGameRoot, RogueModLayout.RuntimeDirectoryName);
+        var bridgeDeployment = Path.Combine(ue4ssModsRoot, RogueModLayout.LoaderModName);
+        var legacyBridgeDeployment = Path.Combine(ue4ssModsRoot, RogueModLayout.LegacyLoaderModName);
         Directory.CreateDirectory(gameModsRoot);
-        Directory.CreateDirectory(modsRoot);
-        var destination = Path.Combine(modsRoot, RogueModLayout.LoaderModName);
-        var legacyDestination = Path.Combine(modsRoot, RogueModLayout.LegacyLoaderModName);
-        var destinationExists = Directory.Exists(destination);
-        var legacyExists = Directory.Exists(legacyDestination);
-        if (destinationExists && legacyExists)
+        Directory.CreateDirectory(ue4ssModsRoot);
+
+        if (ModPackageFileSystem.PathsEqual(packageRoot, runtimeRoot))
+        {
+            throw new IOException("Runtime package is already located at its installation destination.");
+        }
+        var bridgeExists = Directory.Exists(bridgeDeployment);
+        var legacyBridgeExists = Directory.Exists(legacyBridgeDeployment);
+        if (bridgeExists && legacyBridgeExists)
         {
             throw new IOException(
-                $"Both '{RogueModLayout.LoaderModName}' and legacy '{RogueModLayout.LegacyLoaderModName}' runtime directories exist. Resolve the duplicate before updating.");
+                $"Both '{RogueModLayout.LoaderModName}' and legacy '{RogueModLayout.LegacyLoaderModName}' bridge directories exist.");
         }
-        var existingDestination = destinationExists ? destination : legacyExists ? legacyDestination : null;
-        var replacing = existingDestination is not null;
-        var migrating = legacyExists;
+        var existingBridge = bridgeExists ? bridgeDeployment : legacyBridgeExists ? legacyBridgeDeployment : null;
+        var runtimeExists = Directory.Exists(runtimeRoot);
+        var replacing = runtimeExists || existingBridge is not null;
         if (replacing && !replace)
         {
             throw new IOException("RogueMod runtime is already installed. Pass --replace to replace it.");
         }
 
+        var legacyRuntimeLayout = legacyBridgeExists
+            || existingBridge is not null && Directory.Exists(Path.Combine(existingBridge, "runtime"));
         var transaction = Guid.NewGuid().ToString("N");
-        var staging = Path.Combine(modsRoot, $".stage-RogueMod-{transaction}");
-        var backup = Path.Combine(modsRoot, $".backup-RogueMod-{transaction}");
-        var modsFile = Path.Combine(modsRoot, "mods.txt");
+        var runtimeStaging = Path.Combine(normalizedGameRoot, $".RogueMod.stage-{transaction}");
+        var runtimeBackup = Path.Combine(normalizedGameRoot, $".RogueMod.backup-{transaction}");
+        var bridgeStaging = Path.Combine(ue4ssModsRoot, $".stage-{RogueModLayout.LoaderModName}-{transaction}");
+        var bridgeBackup = Path.Combine(ue4ssModsRoot, $".backup-{RogueModLayout.LoaderModName}-{transaction}");
+        var modsFile = Path.Combine(ue4ssModsRoot, "mods.txt");
         var oldModsFile = File.Exists(modsFile) ? File.ReadAllBytes(modsFile) : null;
         var migratedManagedMods = new List<(string LegacyPath, string Destination)>();
         try
         {
-            CopyTree(packageRoot, staging);
-            if (replacing)
+            CopyTree(packageRoot, runtimeStaging);
+            PreserveSharedRuntimeFiles(runtimeRoot, runtimeStaging);
+            if (existingBridge is not null)
             {
-                Directory.Move(existingDestination!, backup);
+                PreserveSharedRuntimeFiles(existingBridge, runtimeStaging);
             }
+            Directory.CreateDirectory(Path.Combine(bridgeStaging, "dlls"));
+            File.Copy(
+                Resolve(packageRoot, "dlls", "main.dll"),
+                Path.Combine(bridgeStaging, "dlls", "main.dll"),
+                overwrite: false);
 
             try
             {
-                Directory.Move(staging, destination);
-                if (replacing)
+                if (runtimeExists)
                 {
-                    MigrateLegacyManagedMods(backup, gameModsRoot, migratedManagedMods);
+                    Directory.Move(runtimeRoot, runtimeBackup);
                 }
+                if (existingBridge is not null)
+                {
+                    Directory.Move(existingBridge, bridgeBackup);
+                }
+                Directory.Move(runtimeStaging, runtimeRoot);
+                Directory.Move(bridgeStaging, bridgeDeployment);
+                MigrateLegacyManagedMods(runtimeBackup, gameModsRoot, migratedManagedMods);
+                MigrateLegacyManagedMods(bridgeBackup, gameModsRoot, migratedManagedMods);
                 EnableRuntime(modsFile);
             }
             catch
             {
-                if (Directory.Exists(destination))
+                if (Directory.Exists(runtimeRoot))
                 {
-                    Directory.Delete(destination, recursive: true);
+                    Directory.Delete(runtimeRoot, recursive: true);
+                }
+                if (Directory.Exists(bridgeDeployment))
+                {
+                    Directory.Delete(bridgeDeployment, recursive: true);
                 }
                 foreach (var migration in migratedManagedMods.AsEnumerable().Reverse())
                 {
                     Directory.CreateDirectory(Path.GetDirectoryName(migration.LegacyPath)!);
                     Directory.Move(migration.Destination, migration.LegacyPath);
                 }
-                if (Directory.Exists(backup))
+                if (Directory.Exists(runtimeBackup))
                 {
-                    Directory.Move(backup, existingDestination!);
+                    Directory.Move(runtimeBackup, runtimeRoot);
                 }
-                RestoreFile(modsFile, oldModsFile);
+                if (Directory.Exists(bridgeBackup) && existingBridge is not null)
+                {
+                    Directory.Move(bridgeBackup, existingBridge);
+                }
+                ModPackageFileSystem.RestoreFile(modsFile, oldModsFile);
                 throw;
             }
 
-            if (Directory.Exists(backup))
+            if (Directory.Exists(runtimeBackup))
             {
-                Directory.Delete(backup, recursive: true);
+                Directory.Delete(runtimeBackup, recursive: true);
+            }
+            if (Directory.Exists(bridgeBackup))
+            {
+                Directory.Delete(bridgeBackup, recursive: true);
             }
         }
         finally
         {
-            if (Directory.Exists(staging))
+            if (Directory.Exists(runtimeStaging))
             {
-                Directory.Delete(staging, recursive: true);
+                Directory.Delete(runtimeStaging, recursive: true);
+            }
+            if (Directory.Exists(bridgeStaging))
+            {
+                Directory.Delete(bridgeStaging, recursive: true);
             }
         }
 
-        return new(destination, modsFile, replacing, migrating, migratedManagedMods.Count);
+        return new(runtimeRoot, modsFile, replacing, legacyRuntimeLayout, migratedManagedMods.Count)
+        {
+            BridgeDeployment = bridgeDeployment
+        };
     }
 
     private static void MigrateLegacyManagedMods(
-        string runtimeBackup,
+        string sourceRoot,
         string gameModsRoot,
         ICollection<(string LegacyPath, string Destination)> migrations)
     {
-        var legacyRoot = Path.Combine(runtimeBackup, RogueModLayout.LegacyManagedModsDirectoryName);
+        var legacyRoot = Path.Combine(sourceRoot, RogueModLayout.LegacyManagedModsDirectoryName);
         if (!Directory.Exists(legacyRoot))
         {
             return;
         }
-
         foreach (var legacyDirectory in Directory.EnumerateDirectories(legacyRoot).Order(StringComparer.Ordinal))
         {
             var manifest = ModManifestLoader.Load(Path.Combine(legacyDirectory, "mod.json"));
@@ -122,6 +169,35 @@ public sealed partial class RogueModRuntimeInstaller
             }
             Directory.Move(legacyDirectory, destination);
             migrations.Add((legacyDirectory, destination));
+        }
+    }
+
+    private static void PreserveSharedRuntimeFiles(string sourceRoot, string stagingRoot)
+    {
+        var source = Path.Combine(sourceRoot, "runtime", "shared");
+        if (!Directory.Exists(source))
+        {
+            return;
+        }
+        var destination = Path.Combine(stagingRoot, "runtime", "shared");
+        CopyMissingTree(source, destination);
+    }
+
+    private static void CopyMissingTree(string source, string destination)
+    {
+        Directory.CreateDirectory(destination);
+        foreach (var entry in Directory.EnumerateFileSystemEntries(source))
+        {
+            RejectLink(entry);
+            var target = Path.Combine(destination, Path.GetFileName(entry));
+            if (Directory.Exists(entry))
+            {
+                CopyMissingTree(entry, target);
+            }
+            else if (!File.Exists(target))
+            {
+                File.Copy(entry, target);
+            }
         }
     }
 
@@ -182,10 +258,7 @@ public sealed partial class RogueModRuntimeInstaller
         var lines = File.Exists(modsFile) ? File.ReadAllLines(modsFile).ToList() : [];
         lines.RemoveAll(line => RogueModBridgeLine().IsMatch(line) || LegacyRogueModLine().IsMatch(line));
         var insertion = lines.FindIndex(line => KeybindsLine().IsMatch(line));
-        lines.Insert(
-            insertion < 0 ? lines.Count : insertion,
-            $"{RogueModLayout.LoaderModName} : 1");
-
+        lines.Insert(insertion < 0 ? lines.Count : insertion, $"{RogueModLayout.LoaderModName} : 1");
         Directory.CreateDirectory(Path.GetDirectoryName(modsFile)!);
         var temporary = modsFile + $".roguemod-{Guid.NewGuid():N}.tmp";
         try
@@ -195,36 +268,12 @@ public sealed partial class RogueModRuntimeInstaller
         }
         finally
         {
-            if (File.Exists(temporary))
-            {
-                File.Delete(temporary);
-            }
+            File.Delete(temporary);
         }
     }
 
-    private static void RestoreFile(string path, byte[]? content)
-    {
-        if (content is null)
-        {
-            File.Delete(path);
-        }
-        else
-        {
-            File.WriteAllBytes(path, content);
-        }
-    }
-
-    private static string Resolve(string root, params string[] parts)
-    {
-        var normalizedRoot = Path.GetFullPath(root);
-        var candidate = Path.GetFullPath(parts.Aggregate(normalizedRoot, Path.Combine));
-        var prefix = Path.EndsInDirectorySeparator(normalizedRoot) ? normalizedRoot : normalizedRoot + Path.DirectorySeparatorChar;
-        if (!candidate.StartsWith(prefix, OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
-        {
-            throw new InvalidDataException("Path escapes its root.");
-        }
-        return candidate;
-    }
+    private static string Resolve(string root, params string[] parts) =>
+        ModPackageFileSystem.Resolve(root, parts);
 
     [GeneratedRegex("^\\s*RogueModBridge\\s*:", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex RogueModBridgeLine();
@@ -241,4 +290,7 @@ public sealed record RogueModRuntimeInstallResult(
     string ModsFile,
     bool Replaced,
     bool MigratedFromLegacyLayout,
-    int MigratedManagedModCount);
+    int MigratedManagedModCount)
+{
+    public string? BridgeDeployment { get; init; }
+}

@@ -1,0 +1,163 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  managed:
+    name: Managed (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+
+      - name: Restore tools
+        run: dotnet tool restore
+
+      - name: Restore
+        run: dotnet restore RogueMod.slnx
+
+      - name: Build
+        run: dotnet build RogueMod.slnx --configuration Release --no-restore --nologo
+
+      - name: Test
+        run: dotnet test RogueMod.slnx --configuration Release --no-build --nologo
+
+      - name: Check for slop
+        run: dotnet slopwatch analyze --fail-on warning
+
+  runtime:
+    name: Native bridge and runtime package
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+
+      - name: Configure native build
+        run: cmake -S src/RogueMod.Native -B .build/native/windows-msvc -A x64 -DROGUEMOD_BUILD_SAMPLES=ON
+
+      - name: Build native bridge and sample
+        run: cmake --build .build/native/windows-msvc --config Release --target RogueModBridge PackageHelloNativeMod --parallel
+
+      - name: Package Windows and Proton runtime
+        shell: pwsh
+        run: >-
+          ./scripts/package-runtime.ps1
+          -Configuration Release
+          -BridgePath .build/native/windows-msvc/Release/RogueMod.Bridge.dll
+
+      - name: Upload ready runtime
+        uses: actions/upload-artifact@v7
+        with:
+          path: .artifacts/runtime/RogueMod.Runtime-win-x64.zip
+          archive: false
+          if-no-files-found: error
+
+      - name: Upload native sample
+        uses: actions/upload-artifact@v7
+        with:
+          name: sample.hello-native
+          path: .artifacts/packages/native/Game__Shipping__Win64/sample.hello-native
+          if-no-files-found: error
+
+  packages:
+    name: Authoring NuGet packages
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+
+      - name: Restore
+        run: dotnet restore RogueMod.slnx
+
+      - name: Pack authoring SDK
+        shell: bash
+        run: |
+          pack_args=()
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            pack_args+=("-p:PackageVersion=${GITHUB_REF_NAME#v}")
+          fi
+
+          dotnet pack src/RogueMod.Abstractions/RogueMod.Abstractions.csproj \
+            --configuration Release --no-restore --output .artifacts/nuget --nologo "${pack_args[@]}"
+          dotnet pack src/RogueMod.Sdk/RogueMod.Sdk.csproj \
+            --configuration Release --no-restore --output .artifacts/nuget --nologo "${pack_args[@]}"
+          dotnet pack src/RogueMod.Templates/RogueMod.Templates.csproj \
+            --configuration Release --no-restore --output .artifacts/nuget --nologo "${pack_args[@]}"
+
+      - name: Upload authoring packages
+        uses: actions/upload-artifact@v7
+        with:
+          name: roguemod-nuget
+          path: |
+            .artifacts/nuget/*.nupkg
+            .artifacts/nuget/*.snupkg
+          if-no-files-found: error
+
+  release:
+    name: Publish tagged release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs:
+      - managed
+      - packages
+      - runtime
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download ready runtime
+        uses: actions/download-artifact@v8
+        with:
+          name: RogueMod.Runtime-win-x64.zip
+          path: .artifacts/runtime
+          skip-decompress: true
+
+      - name: Download authoring packages
+        uses: actions/download-artifact@v8
+        with:
+          name: roguemod-nuget
+          path: .artifacts/nuget
+
+      - name: Publish tagged release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          assets=(
+            .artifacts/runtime/RogueMod.Runtime-win-x64.zip
+            .artifacts/nuget/*.nupkg
+            .artifacts/nuget/*.snupkg
+          )
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "${assets[@]}" --generate-notes --title "$GITHUB_REF_NAME"
+          fi

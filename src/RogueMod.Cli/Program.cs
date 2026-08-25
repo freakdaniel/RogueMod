@@ -1,3 +1,4 @@
+using RogueMod.Core.Authoring;
 using RogueMod.Core.Diagnostics;
 using RogueMod.Core.Mods;
 using RogueMod.Core.Profiles;
@@ -20,6 +21,13 @@ internal static class RogueModCli
             var exitCode = args[0].ToLowerInvariant() switch
             {
                 "diagnose" => RunDiagnose(args[1..]),
+                "new" => RunNew(args[1..]),
+                "install" => RunInstall(args[1..]),
+                "list" => RunList(args[1..]),
+                "uninstall" => RunUninstall(args[1..]),
+                "enable" => RunSetEnabled(args[1..], enabled: true),
+                "disable" => RunSetEnabled(args[1..], enabled: false),
+                "update" => RunUpdate(args[1..]),
                 "install-runtime" => RunInstallRuntime(args[1..]),
                 "install-managed" => RunInstallManaged(args[1..]),
                 "install-native" => RunInstallNative(args[1..]),
@@ -35,6 +43,120 @@ internal static class RogueModCli
         }
     }
 
+    private static int RunInstall(string[] args)
+    {
+        var gameRoot = RequireOption(args, "install", "--game", "directory");
+        var packageDirectory = RequireOption(args, "install", "--package", "directory");
+        var result = new ModManager().Install(
+            LoadProfile(args),
+            gameRoot,
+            packageDirectory,
+            replace: HasFlag(args, "--replace"));
+        Console.WriteLine($"Installed {result.Manifest.Kind.ToString().ToLowerInvariant()} mod: {result.Manifest.Id} {result.Manifest.Version}");
+        Console.WriteLine($"Package store: {result.Destination}");
+        foreach (var deployment in result.Deployments)
+        {
+            Console.WriteLine($"Deployment: {deployment}");
+        }
+        return 0;
+    }
+
+    private static int RunList(string[] args)
+    {
+        var gameRoot = RequireOption(args, "list", "--game", "directory");
+        var mods = new ModManager().List(LoadProfile(args), gameRoot);
+        if (mods.Count == 0)
+        {
+            Console.WriteLine("No RogueMod packages are installed.");
+            return 0;
+        }
+        Console.WriteLine("STATE     KIND     VERSION          ID");
+        foreach (var mod in mods)
+        {
+            Console.WriteLine($"{mod.State,-9} {mod.Manifest.Kind,-8} {mod.Manifest.Version,-16} {mod.Manifest.Id}");
+        }
+        return 0;
+    }
+
+    private static int RunUninstall(string[] args)
+    {
+        var gameRoot = RequireOption(args, "uninstall", "--game", "directory");
+        var modId = RequireOption(args, "uninstall", "--id", "package-id");
+        var result = new ModManager().Uninstall(LoadProfile(args), gameRoot, modId);
+        Console.WriteLine($"Uninstalled {result.Manifest.Kind.ToString().ToLowerInvariant()} mod: {result.Manifest.Id}");
+        return 0;
+    }
+
+    private static int RunSetEnabled(string[] args, bool enabled)
+    {
+        var command = enabled ? "enable" : "disable";
+        var gameRoot = RequireOption(args, command, "--game", "directory");
+        var modId = RequireOption(args, command, "--id", "package-id");
+        var result = new ModManager().SetEnabled(LoadProfile(args), gameRoot, modId, enabled);
+        Console.WriteLine($"{(enabled ? "Enabled" : "Disabled")} {result.Manifest.Kind.ToString().ToLowerInvariant()} mod: {result.Manifest.Id}");
+        return 0;
+    }
+
+    private static int RunUpdate(string[] args)
+    {
+        var gameRoot = RequireOption(args, "update", "--game", "directory");
+        var packageDirectory = RequireOption(args, "update", "--package", "directory");
+        var result = new ModManager().Update(LoadProfile(args), gameRoot, packageDirectory);
+        Console.WriteLine($"Updated mod: {result.Installation.Manifest.Id} {result.PreviousVersion} -> {result.CurrentVersion}");
+        if (result.PreservedDisabledState)
+        {
+            Console.WriteLine("State preserved: disabled");
+        }
+        return 0;
+    }
+
+    private static int RunNew(string[] args)
+    {
+        if (args.Length == 0 || args[0] is "-h" or "--help" or "help")
+        {
+            PrintNewUsage();
+            return 0;
+        }
+
+        if (!args[0].Equals("managed", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ArgumentException($"Unsupported mod template '{args[0]}'. Available template: managed.");
+        }
+
+        var templateArgs = args[1..];
+        if (HasFlag(templateArgs, "-h") || HasFlag(templateArgs, "--help"))
+        {
+            PrintNewUsage();
+            return 0;
+        }
+
+        var modId = ReadOption(templateArgs, "--id")
+            ?? throw new ArgumentException("new managed requires --id <package-id>.");
+        var projectName = ReadOption(templateArgs, "--name")
+            ?? ManagedModScaffolder.CreateDefaultProjectName(modId);
+        var displayName = ReadOption(templateArgs, "--display-name") ?? projectName;
+        var output = ReadOption(templateArgs, "--output")
+            ?? Path.Combine(Environment.CurrentDirectory, projectName);
+        var result = new ManagedModScaffolder().Create(new ManagedModScaffoldOptions
+        {
+            ModId = modId,
+            ProjectName = projectName,
+            DisplayName = displayName,
+            OutputDirectory = output,
+            RogueModSdkVersion = ReadOption(templateArgs, "--sdk-version") ?? "0.1.0",
+            GameSdkVersion = ReadOption(templateArgs, "--game-sdk-version") ?? "0.1.0"
+        });
+
+        Console.WriteLine($"Created managed mod: {result.OutputDirectory}");
+        Console.WriteLine($"Solution: {result.SolutionPath}");
+        Console.WriteLine("Next:");
+        Console.WriteLine($"  cd \"{result.OutputDirectory}\"");
+        Console.WriteLine("  dotnet restore");
+        Console.WriteLine("  dotnet build -c Release -t:PackageRogueMod");
+        Console.WriteLine($"Package: {result.PackageDirectory}");
+        return 0;
+    }
+
     private static int RunInstallRuntime(string[] args)
     {
         var gameRoot = ReadOption(args, "--game")
@@ -46,9 +168,13 @@ internal static class RogueModCli
         var result = new RogueModRuntimeInstaller().Install(
             GameProfileLoader.Load(profilePath), gameRoot, packageDirectory, HasFlag(args, "--replace"));
         Console.WriteLine($"Installed RogueMod runtime: {result.Destination}");
+        if (result.BridgeDeployment is not null)
+        {
+            Console.WriteLine($"UE4SS bridge deployment: {result.BridgeDeployment}");
+        }
         if (result.MigratedFromLegacyLayout)
         {
-            Console.WriteLine($"Migrated legacy runtime to: {RogueModLayout.LoaderModName}");
+            Console.WriteLine($"Migrated legacy runtime files to: {result.Destination}");
         }
         if (result.MigratedManagedModCount > 0)
         {
@@ -135,6 +261,10 @@ internal static class RogueModCli
         var output = ReadOption(args, "--output")
             ?? throw new ArgumentException("generate-sdk requires --output <directory>.");
         var rootNamespace = ReadOption(args, "--namespace") ?? "DeadzoneRogue.Sdk";
+        var packageId = ReadOption(args, "--package-id") ?? "DeadzoneRogue.Sdk";
+        var packageVersion = ReadOption(args, "--package-version") ?? "0.1.0";
+        var rogueModVersion = ReadOption(args, "--roguemod-version") ?? "0.1.0";
+        var gameVersion = ReadOption(args, "--game-version");
         var jmap = ReadOption(args, "--jmap");
         if (jmap is null)
         {
@@ -143,6 +273,13 @@ internal static class RogueModCli
             var profilePath = ReadOption(args, "--profile")
                 ?? Path.Combine(AppContext.BaseDirectory, "profiles", "deadzone-rogue.json");
             var profile = GameProfileLoader.Load(profilePath);
+            if (gameVersion is null)
+            {
+                var executable = Path.GetFullPath(Path.Combine(gameRoot, profile.ExecutableRelativePath));
+                gameVersion = File.Exists(executable)
+                    ? System.Diagnostics.FileVersionInfo.GetVersionInfo(executable).FileVersion
+                    : null;
+            }
             var ue4ssRoot = Path.GetFullPath(Path.Combine(gameRoot, profile.Ue4ss.RootRelativePath));
             jmap = Directory.Exists(ue4ssRoot)
                 ? Directory.EnumerateFiles(ue4ssRoot, "*.jmap", SearchOption.TopDirectoryOnly)
@@ -157,11 +294,20 @@ internal static class RogueModCli
             }
         }
 
-        var abstractionsProject = ReadOption(args, "--abstractions-project")
-            ?? FindRepositoryFile("src/RogueMod.Abstractions/RogueMod.Abstractions.csproj");
+        var requestedAbstractionsProject = ReadOption(args, "--abstractions-project");
+        if (HasFlag(args, "--standalone") && requestedAbstractionsProject is not null)
+        {
+            throw new ArgumentException("generate-sdk cannot combine --standalone with --abstractions-project.");
+        }
+        var abstractionsProject = HasFlag(args, "--standalone")
+            ? null
+            : requestedAbstractionsProject ?? FindRepositoryFile("src/RogueMod.Abstractions/RogueMod.Abstractions.csproj");
         var model = new JMapImporter().Import(jmap);
-        var result = new CSharpSdkGenerator().Generate(model, output, rootNamespace, abstractionsProject);
+        var packageMetadata = new CSharpSdkPackageMetadata(packageId, packageVersion, rogueModVersion, gameVersion);
+        var result = new CSharpSdkGenerator().Generate(model, output, rootNamespace, abstractionsProject, packageMetadata);
         Console.WriteLine($"Generated C# SDK from: {Path.GetFullPath(jmap)}");
+        Console.WriteLine($"Package: {packageMetadata.PackageId} {packageMetadata.PackageVersion}");
+        Console.WriteLine($"Game version: {packageMetadata.GameVersion ?? "not specified"}");
         Console.WriteLine($"Types: {result.TypeCount}");
         Console.WriteLine($"Source: {result.SourcePath}");
         Console.WriteLine($"Manifest: {result.ManifestPath}");
@@ -196,6 +342,17 @@ internal static class RogueModCli
     private static bool HasFlag(string[] args, string name) =>
         args.Any(value => value.Equals(name, StringComparison.OrdinalIgnoreCase));
 
+    private static string RequireOption(string[] args, string command, string option, string valueName) =>
+        ReadOption(args, option)
+        ?? throw new ArgumentException($"{command} requires {option} <{valueName}>.");
+
+    private static GameProfile LoadProfile(string[] args)
+    {
+        var profilePath = ReadOption(args, "--profile")
+            ?? Path.Combine(AppContext.BaseDirectory, "profiles", "deadzone-rogue.json");
+        return GameProfileLoader.Load(profilePath);
+    }
+
     private static int UnknownCommand(string command)
     {
         Console.Error.WriteLine($"Unknown command: {command}");
@@ -216,10 +373,30 @@ internal static class RogueModCli
         Console.WriteLine("RogueMod CLI");
         Console.WriteLine();
         Console.WriteLine("Usage:");
+        Console.WriteLine("  roguemod new managed --id <package-id> [--name <project-name>] [--display-name <name>] [--output <directory>] [--sdk-version <version>] [--game-sdk-version <version>]");
+        Console.WriteLine("  roguemod install --game <directory> --package <directory> [--replace] [--profile <profile.json>]");
+        Console.WriteLine("  roguemod list --game <directory> [--profile <profile.json>]");
+        Console.WriteLine("  roguemod uninstall --game <directory> --id <package-id> [--profile <profile.json>]");
+        Console.WriteLine("  roguemod enable --game <directory> --id <package-id> [--profile <profile.json>]");
+        Console.WriteLine("  roguemod disable --game <directory> --id <package-id> [--profile <profile.json>]");
+        Console.WriteLine("  roguemod update --game <directory> --package <directory> [--profile <profile.json>]");
         Console.WriteLine("  roguemod diagnose --game <directory> [--profile <profile.json>]");
         Console.WriteLine("  roguemod install-runtime --game <directory> --package <directory> [--replace] [--profile <profile.json>]");
         Console.WriteLine("  roguemod install-managed --game <directory> --package <directory> [--replace] [--profile <profile.json>]");
         Console.WriteLine("  roguemod install-native --game <directory> --package <directory> [--replace] [--profile <profile.json>]");
-        Console.WriteLine("  roguemod generate-sdk (--jmap <file> | --game <directory>) --output <directory> [--namespace <name>] [--abstractions-project <file>] [--profile <profile.json>]");
+        Console.WriteLine("  roguemod generate-sdk (--jmap <file> | --game <directory>) --output <directory> [--namespace <name>] [--package-id <id>] [--package-version <version>] [--roguemod-version <version>] [--game-version <version>] [--standalone | --abstractions-project <file>] [--profile <profile.json>]");
+    }
+
+    private static void PrintNewUsage()
+    {
+        Console.WriteLine("Create a managed RogueMod project:");
+        Console.WriteLine("  roguemod new managed --id <package-id> [options]");
+        Console.WriteLine();
+        Console.WriteLine("Options:");
+        Console.WriteLine("  --name <project-name>        C# project and namespace name; derived from the id by default");
+        Console.WriteLine("  --display-name <name>        Human-readable mod name; defaults to the project name");
+        Console.WriteLine("  --output <directory>         New output directory; defaults to ./<project-name>");
+        Console.WriteLine("  --sdk-version <version>      RogueMod.Sdk version; defaults to 0.1.0");
+        Console.WriteLine("  --game-sdk-version <version> DeadzoneRogue.Sdk version; defaults to 0.1.0");
     }
 }

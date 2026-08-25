@@ -42,6 +42,7 @@ public static unsafe class NativeBootstrap
             var modRoot = new string(candidate.ModRoot);
             var gameProfileId = new string(candidate.GameProfileId);
             var gameModsRoot = new string(candidate.GameModsRoot);
+            ManagedSharedAssemblyCatalog.RegisterDirectory(Path.Combine(modRoot, "runtime", "shared"));
             var unreal = new NativeUnrealReflection(
                 candidate.UnrealIsAvailable,
                 candidate.UnrealFindFirstOf,

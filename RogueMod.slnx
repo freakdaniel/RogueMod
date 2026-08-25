@@ -2,9 +2,11 @@
   <Project Path="src/RogueMod.Abstractions/RogueMod.Abstractions.csproj" />
   <Project Path="src/RogueMod.Core/RogueMod.Core.csproj" />
   <Project Path="src/RogueMod.Sdk/RogueMod.Sdk.csproj" />
+  <Project Path="src/RogueMod.Templates/RogueMod.Templates.csproj" />
   <Project Path="src/RogueMod.Runtime/RogueMod.Runtime.csproj" />
   <Project Path="src/RogueMod.Cli/RogueMod.Cli.csproj" />
   <Project Path="src/RogueMod.Sample.Managed/RogueMod.Sample.Managed.csproj" />
   <Project Path="tests/Fixtures/TestManagedMod/TestManagedMod.csproj" />
+  <Project Path="tests/Fixtures/DeadzoneLiveReflectionProbe/DeadzoneLiveReflectionProbe.csproj" />
   <Project Path="tests/RogueMod.Tests/RogueMod.Tests.csproj" />
 </Solution>

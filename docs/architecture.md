@@ -23,18 +23,29 @@ The canonical package store is always relative to the game root:
       dlls/...
 ```
 
+This `Mods` directory contains user-installed game mods only. RogueMod's private CoreCLR, managed runtime, logs, and shared generated SDK use a separate technical root:
+
+```text
+<GameRoot>/RogueMod/
+  runtime/managed/...
+  runtime/dotnet/...
+  runtime/shared/DeadzoneRogue.Sdk.dll
+  RogueMod.log
+```
+
 Managed packages are loaded directly from this directory. Native packages use the same canonical store, but UE4SS requires native DLLs under its own directory. The manager therefore maintains a transactional deployment copy:
 
 ```text
 <GameRoot>/Valhalla/Binaries/Win64/ue4ss/Mods/
-  RogueModBridge/       Technical runtime deployment
+  RogueModBridge/       Minimal bootstrap: dlls/main.dll only
   <native-loader-id>/   Native package deployment copy
+  <lua-loader-id>/      Lua package deployment copy
   mods.txt              UE4SS activation state
 ```
 
-`package-id` is the stable RogueMod identity. A native manifest additionally defines `loaderId`, which must satisfy UE4SS directory-name constraints. Moving the canonical store out of `RogueModBridge` prevents runtime upgrades from owning or hiding user content.
+Pak payloads are deployed to the profile-specific Unreal Pak directory. For Deadzone: Rogue this is `Valhalla/Content/Paks/~mods`; stable package-ID hashes prevent deployment filename collisions. `package-id` is the stable RogueMod identity. Native and Lua manifests additionally define an immutable `loaderId`, which must satisfy UE4SS directory-name constraints. Moving the canonical store and technical runtime out of `RogueModBridge` prevents runtime upgrades from owning or hiding user content. UE4SS receives only the native bootstrap it requires.
 
-The runtime installer migrates packages from the legacy `RogueModBridge/managed-mods` layout into `<GameRoot>/Mods`. Runtime replacement and migration are rolled back together when activation fails.
+The runtime installer migrates packages from the legacy `RogueModBridge/managed-mods` layout into `<GameRoot>/Mods`, preserves `runtime/shared`, and moves the technical payload to `<GameRoot>/RogueMod`. Runtime replacement, bridge deployment, and migration are rolled back together when activation fails.
 
 ## In-process lifecycle
 
@@ -44,9 +55,9 @@ Lifecycle events are delivered on the Unreal game thread. `ProgramStarted` and `
 
 ## Reflection boundary
 
-Host ABI 10 dynamically resolves exact decorated exports from the installed `UE4SS.dll` and does not link the bridge against private UEPseudo headers. Single and multi-object discovery use UE4SS `FindFirstOf` and `FindAllOf`; managed mods receive index/serial handles backed by `GUObjectArray`, never raw object pointers. Handles become invalid after Unreal GC destroys or reuses a slot.
+Host ABI 10 dynamically resolves exact decorated exports from the installed `UE4SS.dll` and does not link the bridge against private UEPseudo headers. Single and multi-object discovery use UE4SS `FindFirstOf` and `FindAllOf`; exact leading-slash paths used by diagnostics resolve through `StaticFindObject`. Managed mods receive index/serial handles backed by `GUObjectArray`, never raw object pointers. Handles become invalid after Unreal GC destroys or reuses a slot.
 
-The current reflection contract supports object discovery; primitive, object, `FString`, `FName`, `FText`, POD script-struct, and one-dimensional `TArray` property access; zero-parameter calls; and input, return, and out/ref parameter buffers for `ProcessEvent`. The bridge constructs and destroys Unreal-owned string and text values with UE4SS exports and copies only UTF-16 display data across the managed boundary. POD structs cross the C ABI as bounded byte buffers, but managed code serializes them from validated field descriptors rather than copying CLR layout. Arrays cross as bounded recursive ABI values; their in-process storage uses Unreal `FMemory`, live inner-property metadata, and type-specific element construction and destruction. Non-empty `TObjectPtr` array element replacement is rejected for the current game build because its safe setter is not exposed by the installed UE4SS version. The bridge validates handle serials, parameter counts, live offsets and sizes, buffer bounds, struct sizes, array counts, and string lengths before dispatch.
+The current reflection contract supports object discovery; primitive, strong/weak/lazy object, `FString`, `FName`, `FText`, POD script-struct, and capability-gated nested `TArray` property access; zero-parameter calls; and input, return, and out/ref parameter buffers for `ProcessEvent`. The bridge constructs and destroys Unreal-owned string and text values with UE4SS exports and copies only UTF-16 display data across the managed boundary. POD structs cross the C ABI as bounded byte buffers, but managed code serializes them from validated field descriptors rather than copying CLR layout. Arrays cross as bounded recursive ABI values; their in-process storage uses Unreal `FMemory`, live inner-property metadata, recursive construction/destruction, and at most three encoded `TArray` containers. Lazy references carry their complete 24-byte native identity plus an optional serial-safe resolved handle and are assigned through the exported UE4SS property setter. Non-empty `TObjectPtr` array element replacement is rejected for the current game build because its safe setter is not exposed by the installed UE4SS version. The bridge validates handle serials, parameter counts, live offsets and sizes, buffer bounds, struct sizes, array counts, and string lengths before dispatch.
 
 ## Platform ABI
 
@@ -58,8 +69,8 @@ C++ mods are cross-compiled on Linux with `clang-cl` and Microsoft CRT/Windows S
 
 - Managed: a C# assembly loaded by `RogueMod.Runtime`.
 - Native: a UE4SS C++ mod deployed under its `loaderId`.
-- Lua: a UE4SS Lua package managed through the shared manifest model.
-- Pak: Unreal content with an explicit mount description.
+- Lua: a UE4SS Lua package with `Scripts/main.lua`, deployed and activated under its `loaderId`.
+- Pak: a `.pak` payload with optional same-name `.utoc`, `.ucas`, and `.sig` companions.
 
 ## Safety boundary
 

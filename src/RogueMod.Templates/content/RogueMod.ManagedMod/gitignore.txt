@@ -1,0 +1,7 @@
+**/bin/
+**/obj/
+.artifacts/
+.idea/
+.vscode/
+*.user
+*.log

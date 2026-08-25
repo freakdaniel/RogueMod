@@ -1,0 +1,12 @@
+{
+  "id": "sample.hello-managed",
+  "name": "Hello managed mod",
+  "version": "0.1.0",
+  "kind": "managed",
+  "entryPoint": "dlls/RogueMod.Sample.Managed.dll::RogueMod.Sample.Managed.HelloMod",
+  "description": "Logs lifecycle and game events through the RogueMod managed API.",
+  "icon": "media/icon.svg",
+  "images": ["media/overview.svg"],
+  "defaultLanguage": "en",
+  "supportedLanguages": ["en"]
+}

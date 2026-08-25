@@ -19,6 +19,19 @@ namespace RogueMod
         constexpr std::size_t maximum_marshaled_array_bytes = 64U * 1024U * 1024U;
         constexpr std::uint32_t property_kind_mask = 0xffU;
         constexpr std::uint32_t array_element_kind_shift = 8U;
+        constexpr std::size_t lazy_object_storage_size = 24;
+
+        struct LazyObjectWire
+        {
+            std::byte storage[lazy_object_storage_size];
+            std::uint64_t resolved_handle;
+            std::uint32_t guid_a;
+            std::uint32_t guid_b;
+            std::uint32_t guid_c;
+            std::uint32_t guid_d;
+        };
+
+        static_assert(sizeof(LazyObjectWire) == 48);
 
         struct FStringLayout
         {
@@ -43,9 +56,9 @@ namespace RogueMod
             return static_cast<UnrealPropertyKind>(encoded_kind & property_kind_mask);
         }
 
-        UnrealPropertyKind decode_array_element_kind(std::uint32_t encoded_kind)
+        std::uint32_t decode_array_element_encoded_kind(std::uint32_t encoded_kind)
         {
-            return static_cast<UnrealPropertyKind>((encoded_kind >> array_element_kind_shift) & property_kind_mask);
+            return encoded_kind >> array_element_kind_shift;
         }
 
         std::size_t expected_value_size(UnrealPropertyKind kind)
@@ -64,7 +77,9 @@ namespace RogueMod
             case UnrealPropertyKind::UInt64:
             case UnrealPropertyKind::Double:
             case UnrealPropertyKind::Object:
-            case UnrealPropertyKind::Name: return 8;
+            case UnrealPropertyKind::Name:
+            case UnrealPropertyKind::WeakObject: return 8;
+            case UnrealPropertyKind::LazyObject: return lazy_object_storage_size;
             case UnrealPropertyKind::String:
             case UnrealPropertyKind::Text:
             case UnrealPropertyKind::Array: return 16;
@@ -87,10 +102,17 @@ namespace RogueMod
                 }
                 CoTaskMemFree(reinterpret_cast<void*>(value.data));
             }
+            else if (kind == UnrealPropertyKind::Optional && value.data != 0)
+            {
+                auto* nested = reinterpret_cast<UnrealValue*>(value.data);
+                free_marshaled_value(*nested);
+                CoTaskMemFree(nested);
+            }
             else if ((kind == UnrealPropertyKind::String
                       || kind == UnrealPropertyKind::Name
                       || kind == UnrealPropertyKind::Text
-                      || kind == UnrealPropertyKind::Struct)
+                      || kind == UnrealPropertyKind::Struct
+                      || kind == UnrealPropertyKind::LazyObject)
                      && value.data != 0)
             {
                 CoTaskMemFree(reinterpret_cast<void*>(value.data));
@@ -265,6 +287,9 @@ namespace RogueMod
         m_find_first_of = load_export<find_first_of_fn>(
             ue4ss_module,
             "?FindFirstOf@UObjectGlobals@Unreal@RC@@YAPEAVUObject@23@PEB_W@Z");
+        m_static_find_object = load_export<static_find_object_fn>(
+            ue4ss_module,
+            "?StaticFindObject_InternalSlow@UObjectGlobals@Unreal@RC@@YAPEAVUObject@23@PEAVUClass@23@PEAV423@PEB_W_N@Z");
         m_find_all_of = load_export<find_all_of_fn>(
             ue4ss_module,
             "?FindAllOf@UObjectGlobals@Unreal@RC@@YAXPEB_WAEAV?$vector@PEAVUObject@Unreal@RC@@V?$allocator@PEAVUObject@Unreal@RC@@@std@@@std@@@Z");
@@ -373,6 +398,36 @@ namespace RogueMod
         m_get_array_inner = load_export<get_array_inner_fn>(
             ue4ss_module,
             "?GetInner@FArrayProperty@Unreal@RC@@QEAAAEAPEAVFProperty@23@XZ");
+        m_get_optional_value_property = load_export<get_optional_value_property_fn>(
+            ue4ss_module,
+            "?GetValueProperty@FOptionalProperty@Unreal@RC@@QEBAAEAPEAVFProperty@23@XZ");
+        m_optional_is_set = load_export<optional_is_set_fn>(
+            ue4ss_module,
+            "?IsSet@FOptionalProperty@Unreal@RC@@QEBA_NPEBX@Z");
+        m_optional_get_value_pointer_for_read_if_set = load_export<optional_get_value_pointer_for_read_if_set_fn>(
+            ue4ss_module,
+            "?GetValuePointerForReadIfSet@FOptionalProperty@Unreal@RC@@QEBAPEBXPEBX@Z");
+        m_optional_mark_set_and_get_initialized_value_pointer = load_export<optional_mark_set_and_get_initialized_value_pointer_fn>(
+            ue4ss_module,
+            "?MarkSetAndGetInitializedValuePointerToReplace@FOptionalProperty@Unreal@RC@@QEBAPEAXPEAX@Z");
+        m_optional_mark_unset = load_export<optional_mark_unset_fn>(
+            ue4ss_module,
+            "?MarkUnset@FOptionalProperty@Unreal@RC@@QEBAXPEAX@Z");
+        m_fweak_object_default_constructor = load_export<fweak_object_default_constructor_fn>(
+            ue4ss_module,
+            "??0FWeakObjectPtr@Unreal@RC@@QEAA@XZ");
+        m_fweak_object_get = load_export<fweak_object_get_fn>(
+            ue4ss_module,
+            "?Get@FWeakObjectPtr@Unreal@RC@@QEBAPEAVUObject@23@XZ");
+        m_fweak_object_assign = load_export<fweak_object_assign_fn>(
+            ue4ss_module,
+            "??4FWeakObjectPtr@Unreal@RC@@QEAAXPEBVUObject@12@@Z");
+        m_fweak_object_reset = load_export<fweak_object_reset_fn>(
+            ue4ss_module,
+            "?Reset@FWeakObjectPtr@Unreal@RC@@QEAAXXZ");
+        m_lazy_object_set_value = load_export<lazy_object_set_value_fn>(
+            ue4ss_module,
+            "?SetPropertyValue@?$TPropertyTypeFundamentals@UFLazyObjectPtr@Unreal@RC@@@Unreal@RC@@SAXPEAXAEBUFLazyObjectPtr@23@@Z");
         m_fmemory_malloc = load_export<fmemory_malloc_fn>(
             ue4ss_module,
             "?Malloc@FMemory@Unreal@RC@@SAPEAX_KI@Z");
@@ -427,6 +482,24 @@ namespace RogueMod
         return is_available()
             ? (1U << 0) | (1U << 1) | (1U << 2) | (1U << 3)
                 | (m_find_all_of != nullptr ? (1U << 4) : 0U)
+                | (1U << 5)
+                | (m_get_optional_value_property != nullptr
+                       && m_optional_is_set != nullptr
+                       && m_optional_get_value_pointer_for_read_if_set != nullptr
+                       && m_optional_mark_set_and_get_initialized_value_pointer != nullptr
+                       && m_optional_mark_unset != nullptr
+                    ? (1U << 6)
+                    : 0U)
+                | (m_fweak_object_default_constructor != nullptr
+                       && m_fweak_object_get != nullptr
+                       && m_fweak_object_assign != nullptr
+                       && m_fweak_object_reset != nullptr
+                    ? (1U << 7)
+                    : 0U)
+                | (m_lazy_object_set_value != nullptr
+                       && m_fweak_object_get != nullptr
+                    ? (1U << 8)
+                    : 0U)
             : 0U;
     }
 
@@ -449,8 +522,11 @@ namespace RogueMod
         }
         const auto element_size = static_cast<std::size_t>(*element_size_pointer);
         const auto fixed_size = expected_value_size(kind);
-        if ((kind != UnrealPropertyKind::Struct && fixed_size != element_size)
-            || (kind == UnrealPropertyKind::Struct && element_size > maximum_marshaled_struct_size))
+        if ((kind != UnrealPropertyKind::Struct
+             && kind != UnrealPropertyKind::Optional
+             && fixed_size != element_size)
+            || ((kind == UnrealPropertyKind::Struct || kind == UnrealPropertyKind::Optional)
+                && element_size > maximum_marshaled_struct_size))
         {
             return false;
         }
@@ -503,8 +579,9 @@ namespace RogueMod
         {
             auto** inner_pointer = m_get_array_inner(property);
             auto* inner = inner_pointer == nullptr ? nullptr : *inner_pointer;
-            const auto inner_kind = decode_array_element_kind(encoded_kind);
-            if (inner == nullptr || inner_kind == UnrealPropertyKind::Array || inner_kind == static_cast<UnrealPropertyKind>(0))
+            const auto inner_encoded_kind = decode_array_element_encoded_kind(encoded_kind);
+            const auto inner_kind = decode_kind(inner_encoded_kind);
+            if (inner == nullptr || inner_kind == static_cast<UnrealPropertyKind>(0))
             {
                 return false;
             }
@@ -548,12 +625,86 @@ namespace RogueMod
                 if (!marshal_typed_value(
                         inner,
                         array_data + static_cast<std::size_t>(index) * inner_size,
-                        static_cast<std::uint32_t>(inner_kind),
+                        inner_encoded_kind,
                         elements[index]))
                 {
                     free_marshaled_value(value);
                     return false;
                 }
+            }
+            return true;
+        }
+        if (kind == UnrealPropertyKind::WeakObject)
+        {
+            if (m_fweak_object_get == nullptr)
+            {
+                return false;
+            }
+            value.data = make_handle(m_fweak_object_get(address));
+            return true;
+        }
+        if (kind == UnrealPropertyKind::LazyObject)
+        {
+            if (m_fweak_object_get == nullptr || element_size != lazy_object_storage_size)
+            {
+                return false;
+            }
+            auto* wire = static_cast<LazyObjectWire*>(CoTaskMemAlloc(sizeof(LazyObjectWire)));
+            if (wire == nullptr)
+            {
+                return false;
+            }
+            std::memcpy(wire->storage, address, lazy_object_storage_size);
+            wire->resolved_handle = make_handle(m_fweak_object_get(address));
+
+            // UE 5.6 TPersistentObjectPtr stores its FWeakObjectPtr cache first and the
+            // FUniqueObjectGuid (four uint32 components) immediately after it. Preserve
+            // the full property bytes independently so writes retain pending identity.
+            const auto* guid = static_cast<const std::byte*>(address) + sizeof(std::uint64_t);
+            std::memcpy(&wire->guid_a, guid, sizeof(std::uint32_t) * 4);
+            value.reserved = sizeof(LazyObjectWire);
+            value.data = reinterpret_cast<std::uint64_t>(wire);
+            return true;
+        }
+        if (kind == UnrealPropertyKind::Optional)
+        {
+            if (m_get_optional_value_property == nullptr
+                || m_optional_is_set == nullptr
+                || m_optional_get_value_pointer_for_read_if_set == nullptr)
+            {
+                return false;
+            }
+            auto** value_property_pointer = m_get_optional_value_property(property);
+            auto* value_property = value_property_pointer == nullptr ? nullptr : *value_property_pointer;
+            const auto value_encoded_kind = decode_array_element_encoded_kind(encoded_kind);
+            if (value_property == nullptr
+                || decode_kind(value_encoded_kind) == static_cast<UnrealPropertyKind>(0))
+            {
+                return false;
+            }
+            if (!m_optional_is_set(property, address))
+            {
+                value.reserved = 0;
+                value.data = 0;
+                return true;
+            }
+            const auto* value_address = m_optional_get_value_pointer_for_read_if_set(property, address);
+            if (value_address == nullptr)
+            {
+                return false;
+            }
+            auto* nested = static_cast<UnrealValue*>(CoTaskMemAlloc(sizeof(UnrealValue)));
+            if (nested == nullptr)
+            {
+                return false;
+            }
+            *nested = {};
+            value.reserved = 1;
+            value.data = reinterpret_cast<std::uint64_t>(nested);
+            if (!marshal_typed_value(value_property, value_address, value_encoded_kind, *nested))
+            {
+                free_marshaled_value(value);
+                return false;
             }
             return true;
         }
@@ -584,8 +735,11 @@ namespace RogueMod
         }
         const auto element_size = static_cast<std::size_t>(*element_size_pointer);
         const auto fixed_size = expected_value_size(kind);
-        if ((kind != UnrealPropertyKind::Struct && fixed_size != element_size)
-            || (kind == UnrealPropertyKind::Struct && element_size > maximum_marshaled_struct_size))
+        if ((kind != UnrealPropertyKind::Struct
+             && kind != UnrealPropertyKind::Optional
+             && fixed_size != element_size)
+            || ((kind == UnrealPropertyKind::Struct || kind == UnrealPropertyKind::Optional)
+                && element_size > maximum_marshaled_struct_size))
         {
             return false;
         }
@@ -657,8 +811,9 @@ namespace RogueMod
             }
             auto** inner_pointer = m_get_array_inner(property);
             auto* inner = inner_pointer == nullptr ? nullptr : *inner_pointer;
-            const auto inner_kind = decode_array_element_kind(encoded_kind);
-            if (inner == nullptr || inner_kind == UnrealPropertyKind::Array || inner_kind == static_cast<UnrealPropertyKind>(0))
+            const auto inner_encoded_kind = decode_array_element_encoded_kind(encoded_kind);
+            const auto inner_kind = decode_kind(inner_encoded_kind);
+            if (inner == nullptr || inner_kind == static_cast<UnrealPropertyKind>(0))
             {
                 return false;
             }
@@ -678,7 +833,7 @@ namespace RogueMod
             const auto* elements = reinterpret_cast<const UnrealValue*>(value.data);
             for (std::uint32_t index = 0; index < value.reserved; ++index)
             {
-                if (elements[index].kind != static_cast<std::uint32_t>(inner_kind))
+                if (elements[index].kind != inner_encoded_kind)
                 {
                     return false;
                 }
@@ -725,7 +880,7 @@ namespace RogueMod
                     if (!assign_typed_value(
                             inner,
                             element_address,
-                            static_cast<std::uint32_t>(inner_kind),
+                            inner_encoded_kind,
                             elements[index]))
                     {
                         return false;
@@ -773,7 +928,7 @@ namespace RogueMod
                     if (!assign_typed_value(
                             inner,
                             element_address,
-                            static_cast<std::uint32_t>(inner_kind),
+                            inner_encoded_kind,
                             elements[index]))
                     {
                         destroy_array_value(property, &temporary, encoded_kind);
@@ -786,6 +941,71 @@ namespace RogueMod
             if (temporary.data != nullptr || temporary.num != 0 || temporary.max != 0)
             {
                 destroy_array_value(property, &temporary, encoded_kind);
+            }
+            return true;
+        }
+        if (kind == UnrealPropertyKind::WeakObject)
+        {
+            if (m_fweak_object_assign == nullptr || m_fweak_object_reset == nullptr)
+            {
+                return false;
+            }
+            if (value.data == 0)
+            {
+                m_fweak_object_reset(address);
+                return true;
+            }
+            const auto* target = resolve_handle(value.data);
+            if (target == nullptr)
+            {
+                return false;
+            }
+            m_fweak_object_assign(address, target);
+            return true;
+        }
+        if (kind == UnrealPropertyKind::LazyObject)
+        {
+            if (m_lazy_object_set_value == nullptr
+                || element_size != lazy_object_storage_size
+                || value.reserved != sizeof(LazyObjectWire)
+                || value.data == 0)
+            {
+                return false;
+            }
+            const auto* wire = reinterpret_cast<const LazyObjectWire*>(value.data);
+            m_lazy_object_set_value(address, wire->storage);
+            return true;
+        }
+        if (kind == UnrealPropertyKind::Optional)
+        {
+            if (m_get_optional_value_property == nullptr
+                || m_optional_mark_set_and_get_initialized_value_pointer == nullptr
+                || m_optional_mark_unset == nullptr
+                || value.reserved > 1
+                || (value.reserved == 0 && value.data != 0)
+                || (value.reserved == 1 && value.data == 0))
+            {
+                return false;
+            }
+            if (value.reserved == 0)
+            {
+                m_optional_mark_unset(property, address);
+                return true;
+            }
+            auto** value_property_pointer = m_get_optional_value_property(property);
+            auto* value_property = value_property_pointer == nullptr ? nullptr : *value_property_pointer;
+            const auto value_encoded_kind = decode_array_element_encoded_kind(encoded_kind);
+            const auto* nested = reinterpret_cast<const UnrealValue*>(value.data);
+            if (value_property == nullptr || nested->kind != value_encoded_kind)
+            {
+                return false;
+            }
+            auto* value_address = m_optional_mark_set_and_get_initialized_value_pointer(property, address);
+            if (value_address == nullptr
+                || !assign_typed_value(value_property, value_address, value_encoded_kind, *nested))
+            {
+                m_optional_mark_unset(property, address);
+                return false;
             }
             return true;
         }
@@ -818,7 +1038,8 @@ namespace RogueMod
         auto** inner_pointer = m_get_array_inner(property);
         auto* inner = inner_pointer == nullptr ? nullptr : *inner_pointer;
         const auto* inner_size_pointer = inner == nullptr ? nullptr : m_get_element_size(inner);
-        const auto inner_kind = decode_array_element_kind(encoded_kind);
+        const auto inner_encoded_kind = decode_array_element_encoded_kind(encoded_kind);
+        const auto inner_kind = decode_kind(inner_encoded_kind);
         if (inner_size_pointer != nullptr && *inner_size_pointer > 0 && array.num > 0 && array.num <= array.max)
         {
             const auto inner_size = static_cast<std::size_t>(*inner_size_pointer);
@@ -834,11 +1055,23 @@ namespace RogueMod
                 {
                     m_ftext_destructor(element);
                 }
+                else if (inner_kind == UnrealPropertyKind::Array)
+                {
+                    destroy_array_value(inner, element, inner_encoded_kind);
+                }
             }
         }
 
         m_fmemory_free(array.data);
         array = {};
+    }
+
+    void UnrealReflectionApi::destroy_optional_value(void* property, void* address) const
+    {
+        if (property != nullptr && address != nullptr && m_optional_mark_unset != nullptr)
+        {
+            m_optional_mark_unset(property, address);
+        }
     }
 
     std::int32_t UnrealReflectionApi::write_property(
@@ -1043,7 +1276,8 @@ namespace RogueMod
             {
                 auto& parameter = parameters[index];
                 const auto kind = decode_kind(parameter.kind);
-                const auto size = kind == UnrealPropertyKind::Struct && parameter.size > 0
+                const auto size = (kind == UnrealPropertyKind::Struct || kind == UnrealPropertyKind::Optional)
+                        && parameter.size > 0
                     ? static_cast<std::size_t>(parameter.size)
                     : expected_value_size(kind);
                 const auto* live_offset = m_get_offset(parameter_properties[index]);
@@ -1078,7 +1312,14 @@ namespace RogueMod
                         && (parameter.value.data == 0 || parameter.value.reserved != size))
                     || (kind == UnrealPropertyKind::Array
                         && (parameter.value.reserved > maximum_marshaled_array_length
-                            || (parameter.value.reserved != 0 && parameter.value.data == 0))))
+                            || (parameter.value.reserved != 0 && parameter.value.data == 0)))
+                    || (kind == UnrealPropertyKind::Optional
+                        && (parameter.value.reserved > 1
+                            || (parameter.value.reserved == 0 && parameter.value.data != 0)
+                            || (parameter.value.reserved == 1 && parameter.value.data == 0)))
+                    || (kind == UnrealPropertyKind::LazyObject
+                        && (parameter.value.reserved != sizeof(LazyObjectWire)
+                            || parameter.value.data == 0)))
                 {
                     return -5;
                 }
@@ -1097,11 +1338,19 @@ namespace RogueMod
                         std::get<2>(*iterator));
                 }
             });
+            std::vector<std::pair<void*, void*>> optional_values;
+            ScopeExit optional_cleanup([&]()
+            {
+                for (auto iterator = optional_values.rbegin(); iterator != optional_values.rend(); ++iterator)
+                {
+                    destroy_optional_value(iterator->first, iterator->second);
+                }
+            });
             for (std::uint32_t index = 0; index < parameter_count; ++index)
             {
                 auto& parameter = parameters[index];
                 const auto kind = decode_kind(parameter.kind);
-                const auto size = kind == UnrealPropertyKind::Struct
+                const auto size = kind == UnrealPropertyKind::Struct || kind == UnrealPropertyKind::Optional
                     ? static_cast<std::size_t>(parameter.size)
                     : expected_value_size(kind);
                 const auto is_input = has_flag(parameter.flags, UnrealParameterFlags::Input);
@@ -1157,6 +1406,47 @@ namespace RogueMod
                     std::memset(address, 0, sizeof(FScriptArrayLayout));
                     array_values.emplace_back(property, address, parameter.kind);
                     if (is_input && !assign_typed_value(property, address, parameter.kind, parameter.value))
+                    {
+                        return -5;
+                    }
+                }
+                else if (kind == UnrealPropertyKind::Optional)
+                {
+                    auto* property = parameter_properties[index];
+                    std::memset(address, 0, size);
+                    optional_values.emplace_back(property, address);
+                    destroy_optional_value(property, address);
+                    if (is_input && !assign_typed_value(property, address, parameter.kind, parameter.value))
+                    {
+                        return -5;
+                    }
+                }
+                else if (kind == UnrealPropertyKind::WeakObject)
+                {
+                    if (m_fweak_object_default_constructor == nullptr)
+                    {
+                        return -5;
+                    }
+                    m_fweak_object_default_constructor(address);
+                    if (is_input
+                        && !assign_typed_value(
+                            parameter_properties[index],
+                            address,
+                            parameter.kind,
+                            parameter.value))
+                    {
+                        return -5;
+                    }
+                }
+                else if (kind == UnrealPropertyKind::LazyObject)
+                {
+                    std::memset(address, 0, size);
+                    if (is_input
+                        && !assign_typed_value(
+                            parameter_properties[index],
+                            address,
+                            parameter.kind,
+                            parameter.value))
                     {
                         return -5;
                     }
@@ -1217,7 +1507,7 @@ namespace RogueMod
                     continue;
                 }
                 const auto kind = decode_kind(parameter.kind);
-                const auto size = kind == UnrealPropertyKind::Struct
+                const auto size = kind == UnrealPropertyKind::Struct || kind == UnrealPropertyKind::Optional
                     ? static_cast<std::size_t>(parameter.size)
                     : expected_value_size(kind);
                 const auto* address = buffer_data + parameter.offset;
@@ -1248,7 +1538,9 @@ namespace RogueMod
                         || kind == UnrealPropertyKind::Name
                         || kind == UnrealPropertyKind::Text
                         || kind == UnrealPropertyKind::Struct
-                        || kind == UnrealPropertyKind::Array)
+                        || kind == UnrealPropertyKind::Array
+                        || kind == UnrealPropertyKind::Optional
+                        || kind == UnrealPropertyKind::LazyObject)
                     {
                         allocation_cleanup.add(parameter.value);
                     }
@@ -1279,7 +1571,10 @@ namespace RogueMod
         {
             return 0;
         }
-        return make_handle(m_find_first_of(class_name));
+        const auto* object = class_name[0] == L'/' && m_static_find_object != nullptr
+            ? m_static_find_object(nullptr, nullptr, class_name, false)
+            : m_find_first_of(class_name);
+        return make_handle(object);
     }
 
     std::int32_t UnrealReflectionApi::find_all_of(

@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 360" role="img" aria-label="Hello managed mod overview">
+  <rect width="640" height="360" fill="#10141a" />
+  <circle cx="110" cy="180" r="58" fill="#76e0b5" />
+  <text x="200" y="170" fill="#f2f5f7" font-family="Segoe UI, sans-serif" font-size="42">Hello managed mod</text>
+  <text x="200" y="218" fill="#9aa7b2" font-family="Segoe UI, sans-serif" font-size="22">RogueMod lifecycle sample</text>
+</svg>

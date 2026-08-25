@@ -1,0 +1,13 @@
+{
+  "id": "sample.managed-mod",
+  "name": "Sample managed mod",
+  "version": "0.1.0",
+  "kind": "managed",
+  "entryPoint": "dlls/RogueMod.ManagedMod.dll::RogueMod.ManagedMod.Mod",
+  "description": "A managed Deadzone: Rogue mod built with RogueMod.",
+  "icon": null,
+  "images": [],
+  "defaultLanguage": "en",
+  "supportedLanguages": ["en"],
+  "localizations": {}
+}

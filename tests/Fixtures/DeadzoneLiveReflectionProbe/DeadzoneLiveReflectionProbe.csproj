@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>DeadzoneLiveReflectionProbe</AssemblyName>
+    <RootNamespace>RogueMod.Tests.Live</RootNamespace>
+    <Version>0.1.0</Version>
+
+    <RogueModModId>roguemod.live-reflection-probe</RogueModModId>
+    <RogueModModName>RogueMod live reflection probe</RogueModModName>
+    <RogueModEntryPoint>RogueMod.Tests.Live.DeadzoneLiveReflectionProbe</RogueModEntryPoint>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../../src/RogueMod.Abstractions/RogueMod.Abstractions.csproj"
+                      Private="false" />
+  </ItemGroup>
+
+  <Import Project="../../../src/RogueMod.Sdk/Managed/RogueMod.ManagedMod.targets" />
+</Project>

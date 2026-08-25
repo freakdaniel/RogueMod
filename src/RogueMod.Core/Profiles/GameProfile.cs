@@ -8,7 +8,10 @@ public sealed record GameProfile(
     uint SteamAppId,
     string UnrealEngineVersion,
     string ExecutableRelativePath,
-    Ue4ssProfile Ue4ss);
+    Ue4ssProfile Ue4ss)
+{
+    public string PakRootRelativePath { get; init; } = "Valhalla/Content/Paks/~mods";
+}
 
 public sealed record Ue4ssProfile(
     string RootRelativePath,
@@ -52,6 +55,11 @@ public static class GameProfileLoader
         if (Path.IsPathRooted(profile.ExecutableRelativePath))
         {
             throw new InvalidDataException("executableRelativePath must be relative to the game root.");
+        }
+
+        if (string.IsNullOrWhiteSpace(profile.PakRootRelativePath) || Path.IsPathRooted(profile.PakRootRelativePath))
+        {
+            throw new InvalidDataException("pakRootRelativePath must be a non-empty path relative to the game root.");
         }
 
         foreach (var file in profile.Ue4ss.CompatibilityFiles)

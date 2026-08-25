@@ -35,6 +35,9 @@ namespace RogueMod
         Struct = 15,
         Text = 16,
         Array = 17,
+        Optional = 18,
+        WeakObject = 19,
+        LazyObject = 20,
     };
 
     struct UnrealValue

@@ -112,6 +112,11 @@ internal sealed class ManagedRuntimeCoordinator(
         var discovered = new Dictionary<string, ModDescriptor>(StringComparer.Ordinal);
         foreach (var directory in Directory.EnumerateDirectories(modsRoot).Order(StringComparer.Ordinal))
         {
+            if (File.Exists(Path.Combine(directory, RogueModLayout.DisabledMarkerFileName)))
+            {
+                LogRuntime(ModLogLevel.Trace, $"Skipping disabled managed package: {directory}");
+                continue;
+            }
             var manifestPath = Path.Combine(directory, "mod.json");
             if (!File.Exists(manifestPath))
             {

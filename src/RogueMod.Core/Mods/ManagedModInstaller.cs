@@ -22,6 +22,7 @@ public sealed class ManagedModInstaller
         RejectLink(packageRoot);
 
         var manifest = ModManifestLoader.Load(Path.Combine(packageRoot, "mod.json"));
+        ModPackageMetadataValidator.ValidateAssets(packageRoot, manifest);
         if (manifest.Kind != ModKind.Managed)
         {
             throw new InvalidDataException($"Package '{manifest.Id}' is {manifest.Kind}, not Managed.");
@@ -48,6 +49,7 @@ public sealed class ManagedModInstaller
         try
         {
             CopyPackage(packageRoot, staging);
+            File.Delete(Path.Combine(staging, RogueModLayout.DisabledMarkerFileName));
             if (Directory.Exists(destination))
             {
                 Directory.Move(destination, backup);

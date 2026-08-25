@@ -1,0 +1,18 @@
+{
+  "$schema": "http://json.schemastore.org/template",
+  "author": "RogueMod contributors",
+  "classifications": ["RogueMod", "Deadzone Rogue", "Mod"],
+  "identity": "RogueMod.Templates.ManagedMod",
+  "name": "RogueMod managed mod",
+  "shortName": "roguemod-managed",
+  "sourceName": "RogueMod.ManagedMod",
+  "defaultName": "MyRogueMod",
+  "preferNameDirectory": true,
+  "sources": [{"source":"./","target":"./","rename":{"gitignore.txt":".gitignore"}}],
+  "symbols": {
+    "mod-id": {"type":"parameter","datatype":"text","defaultValue":"sample.managed-mod","description":"Stable lowercase package identifier.","replaces":"sample.managed-mod"},
+    "mod-name": {"type":"parameter","datatype":"text","defaultValue":"Sample managed mod","description":"Human-readable mod name.","replaces":"Sample managed mod"},
+    "sdk-version": {"type":"parameter","datatype":"text","defaultValue":"0.1.0","description":"RogueMod.Sdk package version.","replaces":"ROGUEMOD_SDK_VERSION"},
+    "game-sdk-version": {"type":"parameter","datatype":"text","defaultValue":"0.1.0","description":"DeadzoneRogue.Sdk package version.","replaces":"DEADZONE_ROGUE_SDK_VERSION"}
+  }
+}

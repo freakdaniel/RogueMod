@@ -2,12 +2,14 @@
   <PropertyGroup>
     <RogueModArtifactsRoot Condition="'$(RogueModArtifactsRoot)' == ''">$(MSBuildProjectDirectory)/.artifacts</RogueModArtifactsRoot>
     <RogueModPackageOutput Condition="'$(RogueModPackageOutput)' == ''">$(RogueModArtifactsRoot)/packages/managed/$(Configuration)/$(RogueModModId)</RogueModPackageOutput>
+    <RogueModManifestFile Condition="'$(RogueModManifestFile)' == '' and Exists('$(MSBuildProjectDirectory)/mod.json')">$(MSBuildProjectDirectory)/mod.json</RogueModManifestFile>
   </PropertyGroup>
 
   <Target Name="ValidateRogueModPackageProperties">
     <Error Condition="'$(RogueModModId)' == ''" Text="RogueModModId is required." />
-    <Error Condition="'$(RogueModModName)' == ''" Text="RogueModModName is required." />
-    <Error Condition="'$(RogueModEntryPoint)' == ''" Text="RogueModEntryPoint is required." />
+    <Error Condition="'$(RogueModManifestFile)' != '' and !Exists('$(RogueModManifestFile)')" Text="RogueModManifestFile does not exist: $(RogueModManifestFile)" />
+    <Error Condition="'$(RogueModManifestFile)' == '' and '$(RogueModModName)' == ''" Text="RogueModModName is required when no mod.json is provided." />
+    <Error Condition="'$(RogueModManifestFile)' == '' and '$(RogueModEntryPoint)' == ''" Text="RogueModEntryPoint is required when no mod.json is provided." />
   </Target>
 
   <Target Name="PackageRogueMod"
@@ -20,7 +22,10 @@
     <ItemGroup>
       <_RogueModRuntimeFile Include="$(TargetPath)" />
       <_RogueModRuntimeFile Include="@(ReferenceCopyLocalPaths)"
-                            Condition="'%(Filename)' != 'RogueMod.Abstractions'" />
+                            Condition="'%(ReferenceCopyLocalPaths.Filename)' != 'RogueMod.Abstractions'
+                                      and '%(ReferenceCopyLocalPaths.Filename)' != 'RogueMod.Sdk'
+                                      and '%(ReferenceCopyLocalPaths.Filename)' != 'DeadzoneRogue.Sdk'" />
+      <_RogueModMediaFile Include="$(MSBuildProjectDirectory)/media/**/*" />
     </ItemGroup>
 
     <RemoveDir Directories="$(RogueModPackageOutput)" />
@@ -28,10 +33,18 @@
     <Copy SourceFiles="@(_RogueModRuntimeFile)"
           DestinationFolder="$(_RogueModDllDirectory)"
           SkipUnchangedFiles="true" />
+    <Copy SourceFiles="$(RogueModManifestFile)"
+          DestinationFiles="$(RogueModPackageOutput)/mod.json"
+          Condition="'$(RogueModManifestFile)' != ''" />
     <WriteLinesToFile File="$(RogueModPackageOutput)/mod.json"
                       Lines="$(_RogueModManifest)"
                       Overwrite="true"
-                      Encoding="UTF-8" />
+                      Encoding="UTF-8"
+                      Condition="'$(RogueModManifestFile)' == ''" />
+    <Copy SourceFiles="@(_RogueModMediaFile)"
+          DestinationFiles="@(_RogueModMediaFile->'$(RogueModPackageOutput)/media/%(RecursiveDir)%(Filename)%(Extension)')"
+          SkipUnchangedFiles="true"
+          Condition="'@(_RogueModMediaFile)' != ''" />
 
     <Message Importance="high" Text="RogueMod package: $(RogueModPackageOutput)" />
   </Target>

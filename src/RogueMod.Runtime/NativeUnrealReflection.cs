@@ -21,8 +21,11 @@ internal sealed unsafe class NativeUnrealReflection(
     private const int MaximumStructSize = 1_048_576;
     private const uint MaximumArrayLength = 1_048_576;
     private const uint MaximumObjectCount = 1_048_576;
+    private const uint LazyObjectWireSize = 48;
+    private const int LazyObjectStorageSize = UnrealLazyObjectValue.NativeStorageSize;
     private const uint PropertyKindMask = 0xff;
-    private const int ArrayElementKindShift = 8;
+    private const int ContainerValueKindShift = 8;
+    private const uint MaximumEncodedValueKind = 0x00ff_ffff;
 
     public bool IsAvailable => isAvailable != null && isAvailable() != 0;
 
@@ -66,7 +69,7 @@ internal sealed unsafe class NativeUnrealReflection(
                 return [];
             }
 
-            for (var attempt = 0; attempt < 3; attempt++)
+            for (var attempt = 0; attempt < 16; attempt++)
             {
                 var handles = new ulong[required];
                 fixed (ulong* handlePointer = handles)
@@ -162,7 +165,8 @@ internal sealed unsafe class NativeUnrealReflection(
                     $"UFunction parameter '{function.Path}:{descriptor.Name}' is a fixed native array; ABI 10 supports scalar parameters and dynamic TArray values only.");
             }
             var kind = GetPropertyKind(descriptor.UnrealType, descriptor.Size);
-            var encodedKind = EncodePropertyKind(kind, descriptor.Array);
+            EnsurePropertyCapabilities(kind, descriptor.Array, descriptor.Optional);
+            var encodedKind = EncodePropertyKind(kind, descriptor.Array, descriptor.Optional);
             var flags = (descriptor.IsInput ? NativeParameterFlags.Input : 0)
                 | (descriptor.IsOutput ? NativeParameterFlags.Output : 0)
                 | (descriptor.IsReturn ? NativeParameterFlags.Return : 0);
@@ -175,7 +179,14 @@ internal sealed unsafe class NativeUnrealReflection(
                         $"Required UFunction argument '{descriptor.Name}' was not supplied for '{function.Path}'.",
                         nameof(arguments));
                 }
-                nativeValue = ToNativeValue(kind, encodedKind, argument, descriptor.Struct, descriptor.Array, inputAllocations);
+                nativeValue = ToNativeValue(
+                    kind,
+                    encodedKind,
+                    argument,
+                    descriptor.Struct,
+                    descriptor.Array,
+                    descriptor.Optional,
+                    inputAllocations);
             }
             else
             {
@@ -232,7 +243,8 @@ internal sealed unsafe class NativeUnrealReflection(
                     DecodePropertyKind(nativeParameters[index].Kind),
                     nativeParameters[index].Value,
                     descriptor.Struct,
-                    descriptor.Array);
+                    descriptor.Array,
+                    descriptor.Optional);
                 if (descriptor.IsReturn)
                 {
                     returnValue = value;
@@ -263,7 +275,8 @@ internal sealed unsafe class NativeUnrealReflection(
         }
 
         var kind = GetPropertyKind(property.UnrealType, property.Size);
-        var encodedKind = EncodePropertyKind(kind, property.Array);
+        EnsurePropertyCapabilities(kind, property.Array, property.Optional);
+        var encodedKind = EncodePropertyKind(kind, property.Array, property.Optional);
         NativeUnrealValue nativeValue;
         int result;
         fixed (char* propertyName = property.Name)
@@ -278,7 +291,7 @@ internal sealed unsafe class NativeUnrealReflection(
 
         try
         {
-            return ToManagedValue(kind, nativeValue, property.Struct, property.Array);
+            return ToManagedValue(kind, nativeValue, property.Struct, property.Array, property.Optional);
         }
         finally
         {
@@ -290,7 +303,8 @@ internal sealed unsafe class NativeUnrealReflection(
         NativePropertyKind kind,
         NativeUnrealValue nativeValue,
         UnrealStructDescriptor? structDescriptor = null,
-        UnrealArrayDescriptor? arrayDescriptor = null)
+        UnrealArrayDescriptor? arrayDescriptor = null,
+        UnrealOptionalDescriptor? optionalDescriptor = null)
     {
         object managedValue = kind switch
         {
@@ -305,10 +319,12 @@ internal sealed unsafe class NativeUnrealReflection(
             NativePropertyKind.UInt64 => nativeValue.Data,
             NativePropertyKind.Float => BitConverter.Int32BitsToSingle(unchecked((int)nativeValue.Data)),
             NativePropertyKind.Double => BitConverter.Int64BitsToDouble(unchecked((long)nativeValue.Data)),
-            NativePropertyKind.Object => new UnrealObjectHandle(nativeValue.Data),
+            NativePropertyKind.Object or NativePropertyKind.WeakObject => new UnrealObjectHandle(nativeValue.Data),
+            NativePropertyKind.LazyObject => ReadNativeLazyObject(nativeValue),
             NativePropertyKind.String or NativePropertyKind.Name or NativePropertyKind.Text => ReadNativeString(nativeValue),
             NativePropertyKind.Struct => ReadNativeStruct(nativeValue, RequireStructDescriptor(structDescriptor)),
             NativePropertyKind.Array => ReadNativeArray(nativeValue, RequireArrayDescriptor(arrayDescriptor)),
+            NativePropertyKind.Optional => ReadNativeOptional(nativeValue, RequireOptionalDescriptor(optionalDescriptor)),
             _ => throw new System.Diagnostics.UnreachableException()
         };
         return new UnrealValue(managedValue);
@@ -327,9 +343,17 @@ internal sealed unsafe class NativeUnrealReflection(
         }
 
         var kind = GetPropertyKind(property.UnrealType, property.Size);
-        var encodedKind = EncodePropertyKind(kind, property.Array);
+        EnsurePropertyCapabilities(kind, property.Array, property.Optional);
+        var encodedKind = EncodePropertyKind(kind, property.Array, property.Optional);
         using var inputAllocations = new NativeAllocations();
-        var nativeValue = ToNativeValue(kind, encodedKind, value, property.Struct, property.Array, inputAllocations);
+        var nativeValue = ToNativeValue(
+            kind,
+            encodedKind,
+            value,
+            property.Struct,
+            property.Array,
+            property.Optional,
+            inputAllocations);
         int result;
         fixed (char* propertyName = property.Name)
         {
@@ -348,6 +372,7 @@ internal sealed unsafe class NativeUnrealReflection(
         UnrealValue value,
         UnrealStructDescriptor? structDescriptor,
         UnrealArrayDescriptor? arrayDescriptor,
+        UnrealOptionalDescriptor? optionalDescriptor,
         NativeAllocations allocations)
     {
         var managed = value.Value;
@@ -419,6 +444,19 @@ internal sealed unsafe class NativeUnrealReflection(
                 allocations);
         }
 
+        if (kind == NativePropertyKind.Optional)
+        {
+            return WriteNativeOptional(
+                encodedKind,
+                value,
+                RequireOptionalDescriptor(optionalDescriptor),
+                allocations);
+        }
+        if (kind == NativePropertyKind.LazyObject)
+        {
+            return WriteNativeLazyObject(encodedKind, value, allocations);
+        }
+
         ulong data = kind switch
         {
             NativePropertyKind.Boolean when managed is bool typed => typed ? 1UL : 0UL,
@@ -432,7 +470,7 @@ internal sealed unsafe class NativeUnrealReflection(
             NativePropertyKind.UInt64 when managed is ulong typed => typed,
             NativePropertyKind.Float when managed is float typed => unchecked((uint)BitConverter.SingleToInt32Bits(typed)),
             NativePropertyKind.Double when managed is double typed => unchecked((ulong)BitConverter.DoubleToInt64Bits(typed)),
-            NativePropertyKind.Object when managed is UnrealObjectHandle typed => typed.Value,
+            NativePropertyKind.Object or NativePropertyKind.WeakObject when managed is UnrealObjectHandle typed => typed.Value,
             _ => throw new InvalidCastException(
                 $"Unreal property kind '{kind}' cannot be written from managed value type " +
                 $"'{value.Value?.GetType().FullName ?? "null"}'.")
@@ -458,6 +496,8 @@ internal sealed unsafe class NativeUnrealReflection(
             "FloatProperty" => NativePropertyKind.Float,
             "DoubleProperty" => NativePropertyKind.Double,
             "ObjectProperty" or "ClassProperty" => NativePropertyKind.Object,
+            "WeakObjectProperty" when size == 8 => NativePropertyKind.WeakObject,
+            "LazyObjectProperty" when size == LazyObjectStorageSize => NativePropertyKind.LazyObject,
             "StrProperty" when size == 16 => NativePropertyKind.String,
             "NameProperty" when size == 8 => NativePropertyKind.Name,
             "TextProperty" when size == 16 => NativePropertyKind.Text,
@@ -467,30 +507,42 @@ internal sealed unsafe class NativeUnrealReflection(
             "EnumProperty" when size == 8 => NativePropertyKind.UInt64,
             "StructProperty" when size > 0 => NativePropertyKind.Struct,
             "ArrayProperty" when size == 16 => NativePropertyKind.Array,
+            "OptionalProperty" when size > 0 => NativePropertyKind.Optional,
             _ => throw new NotSupportedException($"Property type '{unrealType}' is not supported by RogueMod ABI 10.")
         };
     }
 
-    private static uint EncodePropertyKind(NativePropertyKind kind, UnrealArrayDescriptor? arrayDescriptor)
+    private static uint EncodePropertyKind(
+        NativePropertyKind kind,
+        UnrealArrayDescriptor? arrayDescriptor = null,
+        UnrealOptionalDescriptor? optionalDescriptor = null)
     {
-        if (kind != NativePropertyKind.Array)
+        if (kind is not (NativePropertyKind.Array or NativePropertyKind.Optional))
         {
             return (uint)kind;
         }
-        var descriptor = RequireArrayDescriptor(arrayDescriptor);
-        var elementKind = GetPropertyKind(descriptor.ElementUnrealType, descriptor.ElementSize);
-        if (elementKind == NativePropertyKind.Array)
+        uint encodedValueKind;
+        if (kind == NativePropertyKind.Array)
         {
-            throw new NotSupportedException("Nested TArray values are not supported by RogueMod ABI 10.");
+            var descriptor = RequireArrayDescriptor(arrayDescriptor);
+            var valueKind = GetPropertyKind(descriptor.ElementUnrealType, descriptor.ElementSize);
+            encodedValueKind = EncodePropertyKind(valueKind, descriptor.ElementArray);
         }
-        return (uint)kind | (uint)elementKind << ArrayElementKindShift;
+        else
+        {
+            var descriptor = RequireOptionalDescriptor(optionalDescriptor);
+            var valueKind = GetPropertyKind(descriptor.ValueUnrealType, descriptor.ValueSize);
+            encodedValueKind = EncodePropertyKind(valueKind);
+        }
+        if (encodedValueKind > MaximumEncodedValueKind)
+        {
+            throw new NotSupportedException("RogueMod ABI 10 supports at most three nested container levels.");
+        }
+        return (uint)kind | encodedValueKind << ContainerValueKindShift;
     }
 
     private static NativePropertyKind DecodePropertyKind(uint encodedKind) =>
         (NativePropertyKind)(encodedKind & PropertyKindMask);
-
-    private static NativePropertyKind DecodeArrayElementKind(uint encodedKind) =>
-        (NativePropertyKind)((encodedKind >> ArrayElementKindShift) & PropertyKindMask);
 
     private static string ReadNativeString(NativeUnrealValue value)
     {
@@ -520,8 +572,7 @@ internal sealed unsafe class NativeUnrealReflection(
                 $"Unreal TArray<{descriptor.ElementUnrealType}> requires an UnrealArrayValue, not " +
                 $"'{value.Value?.GetType().FullName ?? "null"}'.");
         }
-        if (!StringComparer.Ordinal.Equals(arrayValue.Descriptor.ElementUnrealType, descriptor.ElementUnrealType)
-            || arrayValue.Descriptor.ElementSize != descriptor.ElementSize)
+        if (!ArrayDescriptorsMatch(arrayValue.Descriptor, descriptor))
         {
             throw new InvalidCastException(
                 $"Unreal array element '{arrayValue.Descriptor.ElementUnrealType}' cannot be written as " +
@@ -539,14 +590,16 @@ internal sealed unsafe class NativeUnrealReflection(
         }
 
         var elementKind = GetPropertyKind(descriptor.ElementUnrealType, descriptor.ElementSize);
+        var encodedElementKind = EncodePropertyKind(elementKind, descriptor.ElementArray);
         var values = allocations.AddValues(arrayValue.Elements.Count);
         for (var index = 0; index < arrayValue.Elements.Count; index++)
         {
             values[index] = ToNativeValue(
                 elementKind,
-                (uint)elementKind,
+                encodedElementKind,
                 arrayValue.Elements[index],
                 descriptor.ElementStruct,
+                descriptor.ElementArray,
                 null,
                 allocations);
         }
@@ -566,8 +619,9 @@ internal sealed unsafe class NativeUnrealReflection(
                 $"The native bridge returned an invalid TArray<{descriptor.ElementUnrealType}> buffer.");
         }
         var expectedElementKind = GetPropertyKind(descriptor.ElementUnrealType, descriptor.ElementSize);
-        var encodedElementKind = DecodeArrayElementKind(value.Kind);
-        if (DecodePropertyKind(value.Kind) != NativePropertyKind.Array || encodedElementKind != expectedElementKind)
+        var expectedEncodedElementKind = EncodePropertyKind(expectedElementKind, descriptor.ElementArray);
+        var expectedEncodedKind = EncodePropertyKind(NativePropertyKind.Array, descriptor);
+        if (value.Kind != expectedEncodedKind)
         {
             throw new InvalidOperationException(
                 $"The native bridge returned a mismatched TArray<{descriptor.ElementUnrealType}> element kind.");
@@ -576,7 +630,7 @@ internal sealed unsafe class NativeUnrealReflection(
         var values = (NativeUnrealValue*)value.Data;
         for (var index = 0; index < elements.Length; index++)
         {
-            if (DecodePropertyKind(values[index].Kind) != expectedElementKind)
+            if (values[index].Kind != expectedEncodedElementKind)
             {
                 throw new InvalidOperationException(
                     $"The native bridge returned a mismatched element at TArray index {index}.");
@@ -585,10 +639,153 @@ internal sealed unsafe class NativeUnrealReflection(
                 expectedElementKind,
                 values[index],
                 descriptor.ElementStruct,
-                null);
+                descriptor.ElementArray);
         }
         return new UnrealArrayValue(descriptor, elements);
     }
+
+    private static NativeUnrealValue WriteNativeLazyObject(
+        uint encodedKind,
+        UnrealValue value,
+        NativeAllocations allocations)
+    {
+        if (value.Value is not UnrealLazyObjectValue lazyValue)
+        {
+            throw new InvalidCastException(
+                $"An Unreal lazy object reference requires an UnrealLazyObjectValue, not " +
+                $"'{value.Value?.GetType().FullName ?? "null"}'.");
+        }
+
+        var wire = new byte[LazyObjectWireSize];
+        lazyValue.CopyNativeStorage().CopyTo(wire, 0);
+        BinaryPrimitives.WriteUInt64LittleEndian(wire.AsSpan(LazyObjectStorageSize), lazyValue.ResolvedHandle.Value);
+        BinaryPrimitives.WriteUInt32LittleEndian(wire.AsSpan(32), lazyValue.ObjectId.A);
+        BinaryPrimitives.WriteUInt32LittleEndian(wire.AsSpan(36), lazyValue.ObjectId.B);
+        BinaryPrimitives.WriteUInt32LittleEndian(wire.AsSpan(40), lazyValue.ObjectId.C);
+        BinaryPrimitives.WriteUInt32LittleEndian(wire.AsSpan(44), lazyValue.ObjectId.D);
+        return new NativeUnrealValue
+        {
+            Kind = encodedKind,
+            Reserved = LazyObjectWireSize,
+            Data = unchecked((ulong)allocations.AddBytes(wire))
+        };
+    }
+
+    private static UnrealLazyObjectValue ReadNativeLazyObject(NativeUnrealValue value)
+    {
+        if (value.Reserved != LazyObjectWireSize || value.Data == 0)
+        {
+            throw new InvalidOperationException("The native bridge returned an invalid lazy object reference buffer.");
+        }
+
+        var wire = new ReadOnlySpan<byte>((void*)value.Data, checked((int)value.Reserved));
+        var storage = wire[..LazyObjectStorageSize].ToArray();
+        var resolvedHandle = new UnrealObjectHandle(BinaryPrimitives.ReadUInt64LittleEndian(wire[LazyObjectStorageSize..]));
+        var objectId = new UnrealGuid(
+            BinaryPrimitives.ReadUInt32LittleEndian(wire[32..]),
+            BinaryPrimitives.ReadUInt32LittleEndian(wire[36..]),
+            BinaryPrimitives.ReadUInt32LittleEndian(wire[40..]),
+            BinaryPrimitives.ReadUInt32LittleEndian(wire[44..]));
+        return new UnrealLazyObjectValue(objectId, resolvedHandle, storage);
+    }
+
+    private static NativeUnrealValue WriteNativeOptional(
+        uint encodedKind,
+        UnrealValue value,
+        UnrealOptionalDescriptor descriptor,
+        NativeAllocations allocations)
+    {
+        if (value.Value is not UnrealOptionalValue optionalValue)
+        {
+            throw new InvalidCastException(
+                $"Unreal TOptional<{descriptor.ValueUnrealType}> requires an UnrealOptionalValue, not " +
+                $"'{value.Value?.GetType().FullName ?? "null"}'.");
+        }
+        if (!OptionalDescriptorsMatch(optionalValue.Descriptor, descriptor))
+        {
+            throw new InvalidCastException(
+                $"Unreal optional value '{optionalValue.Descriptor.ValueUnrealType}' cannot be written as " +
+                $"'{descriptor.ValueUnrealType}'.");
+        }
+        if (!optionalValue.IsSet)
+        {
+            return new NativeUnrealValue { Kind = encodedKind };
+        }
+
+        var valueKind = GetPropertyKind(descriptor.ValueUnrealType, descriptor.ValueSize);
+        var encodedValueKind = EncodePropertyKind(valueKind);
+        var nativeValue = allocations.AddValues(1);
+        *nativeValue = ToNativeValue(
+            valueKind,
+            encodedValueKind,
+            optionalValue.Value,
+            descriptor.ValueStruct,
+            null,
+            null,
+            allocations);
+        return new NativeUnrealValue
+        {
+            Kind = encodedKind,
+            Reserved = 1,
+            Data = unchecked((ulong)nativeValue)
+        };
+    }
+
+    private static UnrealOptionalValue ReadNativeOptional(
+        NativeUnrealValue value,
+        UnrealOptionalDescriptor descriptor)
+    {
+        var expectedValueKind = GetPropertyKind(descriptor.ValueUnrealType, descriptor.ValueSize);
+        var expectedEncodedValueKind = EncodePropertyKind(expectedValueKind);
+        var expectedEncodedKind = EncodePropertyKind(NativePropertyKind.Optional, optionalDescriptor: descriptor);
+        if (value.Kind != expectedEncodedKind
+            || value.Reserved > 1
+            || (value.Reserved == 0 && value.Data != 0)
+            || (value.Reserved == 1 && value.Data == 0))
+        {
+            throw new InvalidOperationException(
+                $"The native bridge returned an invalid TOptional<{descriptor.ValueUnrealType}> buffer.");
+        }
+        if (value.Reserved == 0)
+        {
+            return new UnrealOptionalValue(descriptor, false, UnrealValue.Null);
+        }
+
+        var nativeValue = *(NativeUnrealValue*)value.Data;
+        if (nativeValue.Kind != expectedEncodedValueKind)
+        {
+            throw new InvalidOperationException(
+                $"The native bridge returned a mismatched TOptional<{descriptor.ValueUnrealType}> value kind.");
+        }
+        return new UnrealOptionalValue(
+            descriptor,
+            true,
+            ToManagedValue(expectedValueKind, nativeValue, descriptor.ValueStruct));
+    }
+
+    private static bool OptionalDescriptorsMatch(UnrealOptionalDescriptor left, UnrealOptionalDescriptor right) =>
+        StringComparer.Ordinal.Equals(left.ValueUnrealType, right.ValueUnrealType)
+        && left.ValueSize == right.ValueSize
+        && left.ValueByteOffset == right.ValueByteOffset
+        && left.ValueByteMask == right.ValueByteMask
+        && left.ValueFieldMask == right.ValueFieldMask
+        && StringComparer.Ordinal.Equals(left.ValueStruct?.Path, right.ValueStruct?.Path)
+        && left.ValueStruct?.Size == right.ValueStruct?.Size;
+
+    private static bool ArrayDescriptorsMatch(UnrealArrayDescriptor left, UnrealArrayDescriptor right) =>
+        StringComparer.Ordinal.Equals(left.ElementUnrealType, right.ElementUnrealType)
+        && left.ElementSize == right.ElementSize
+        && left.ElementByteOffset == right.ElementByteOffset
+        && left.ElementByteMask == right.ElementByteMask
+        && left.ElementFieldMask == right.ElementFieldMask
+        && StringComparer.Ordinal.Equals(left.ElementStruct?.Path, right.ElementStruct?.Path)
+        && left.ElementStruct?.Size == right.ElementStruct?.Size
+        && (left.ElementArray, right.ElementArray) switch
+        {
+            (null, null) => true,
+            ({ } leftNested, { } rightNested) => ArrayDescriptorsMatch(leftNested, rightNested),
+            _ => false
+        };
 
     private static UnrealArrayDescriptor RequireArrayDescriptor(UnrealArrayDescriptor? descriptor)
     {
@@ -605,7 +802,16 @@ internal sealed unsafe class NativeUnrealReflection(
         var kind = GetPropertyKind(descriptor.ElementUnrealType, descriptor.ElementSize);
         if (kind == NativePropertyKind.Array)
         {
-            throw new NotSupportedException("Nested TArray values are not supported by RogueMod ABI 10.");
+            if (descriptor.ElementArray is null)
+            {
+                throw new InvalidOperationException("The generated SDK did not provide a nested TArray descriptor.");
+            }
+            RequireArrayDescriptor(descriptor.ElementArray);
+        }
+
+        else if (descriptor.ElementArray is not null)
+        {
+            throw new InvalidOperationException("A non-array TArray element cannot have a nested array descriptor.");
         }
         if (kind == NativePropertyKind.Boolean
             && (descriptor.ElementByteOffset < 0
@@ -624,6 +830,69 @@ internal sealed unsafe class NativeUnrealReflection(
             }
         }
         return descriptor;
+    }
+
+    private static UnrealOptionalDescriptor RequireOptionalDescriptor(UnrealOptionalDescriptor? descriptor)
+    {
+        if (descriptor is null)
+        {
+            throw new NotSupportedException("The generated SDK did not provide a TOptional value descriptor.");
+        }
+        if (string.IsNullOrWhiteSpace(descriptor.ValueUnrealType)
+            || descriptor.ValueSize <= 0
+            || descriptor.ValueSize > MaximumStructSize)
+        {
+            throw new InvalidOperationException("The generated SDK provided an invalid TOptional value descriptor.");
+        }
+        var kind = GetPropertyKind(descriptor.ValueUnrealType, descriptor.ValueSize);
+        if (kind is NativePropertyKind.Array or NativePropertyKind.Optional)
+        {
+            throw new NotSupportedException("Nested containers inside TOptional are not supported yet.");
+        }
+        if (kind == NativePropertyKind.Boolean
+            && (descriptor.ValueByteOffset < 0
+                || descriptor.ValueByteOffset >= descriptor.ValueSize
+                || descriptor.ValueByteMask is < 0 or > byte.MaxValue
+                || descriptor.ValueFieldMask is < 0 or > byte.MaxValue))
+        {
+            throw new InvalidOperationException("The generated SDK provided an invalid TOptional bool layout.");
+        }
+        if (kind == NativePropertyKind.Struct)
+        {
+            var structDescriptor = RequireStructDescriptor(descriptor.ValueStruct);
+            if (structDescriptor.Size != descriptor.ValueSize)
+            {
+                throw new InvalidOperationException("The generated SDK provided a mismatched TOptional struct size.");
+            }
+        }
+        return descriptor;
+    }
+
+    private void EnsurePropertyCapabilities(
+        NativePropertyKind kind,
+        UnrealArrayDescriptor? arrayDescriptor,
+        UnrealOptionalDescriptor? optionalDescriptor)
+    {
+        if (arrayDescriptor?.ElementArray is not null
+            && (Capabilities & UnrealReflectionCapabilities.NestedArrays) == 0)
+        {
+            throw new NotSupportedException("The active RogueMod bridge does not support nested TArray values.");
+        }
+        if (optionalDescriptor is not null
+            && (Capabilities & UnrealReflectionCapabilities.OptionalValues) == 0)
+        {
+            throw new NotSupportedException("The active RogueMod bridge does not support TOptional values.");
+        }
+        if (kind == NativePropertyKind.WeakObject
+            && (Capabilities & UnrealReflectionCapabilities.WeakObjectReferences) == 0)
+        {
+            throw new NotSupportedException("The active RogueMod bridge does not support weak UObject references.");
+        }
+        if (kind == NativePropertyKind.LazyObject
+            && (Capabilities & UnrealReflectionCapabilities.LazyObjectReferences) == 0)
+        {
+            throw new NotSupportedException("The active RogueMod bridge does not support lazy UObject references.");
+        }
     }
 
     private static UnrealStructDescriptor RequireStructDescriptor(UnrealStructDescriptor? descriptor)
@@ -861,10 +1130,21 @@ internal sealed unsafe class NativeUnrealReflection(
             Marshal.FreeCoTaskMem(unchecked((nint)value.Data));
             return;
         }
+        if (kind == NativePropertyKind.Optional)
+        {
+            if (value.Reserved == 1)
+            {
+                var nested = *(NativeUnrealValue*)value.Data;
+                FreeNativeAllocation(nested.Kind, nested, inputAllocations);
+            }
+            Marshal.FreeCoTaskMem(unchecked((nint)value.Data));
+            return;
+        }
         if (kind is not (NativePropertyKind.String
             or NativePropertyKind.Name
             or NativePropertyKind.Text
-            or NativePropertyKind.Struct))
+            or NativePropertyKind.Struct
+            or NativePropertyKind.LazyObject))
         {
             return;
         }
@@ -956,7 +1236,10 @@ internal sealed unsafe class NativeUnrealReflection(
         Name = 14,
         Struct = 15,
         Text = 16,
-        Array = 17
+        Array = 17,
+        Optional = 18,
+        WeakObject = 19,
+        LazyObject = 20
     }
 
     private enum StructFieldKind
