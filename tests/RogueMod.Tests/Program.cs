@@ -1054,6 +1054,8 @@ public sealed class RogueModTests
 
 file sealed class TemporaryDirectory : IDisposable
 {
+    private const int DeleteAttempts = 20;
+
     public TemporaryDirectory()
     {
         Path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"roguemod-tests-{Guid.NewGuid():N}");
@@ -1062,7 +1064,35 @@ file sealed class TemporaryDirectory : IDisposable
 
     public string Path { get; }
 
-    public void Dispose() => Directory.Delete(Path, recursive: true);
+    public void Dispose()
+    {
+        for (var attempt = 0; attempt < DeleteAttempts; attempt++)
+        {
+            try
+            {
+                Directory.Delete(Path, recursive: true);
+                return;
+            }
+            catch (UnauthorizedAccessException) when (attempt < DeleteAttempts - 1)
+            {
+                ReleaseCollectibleLoadContexts();
+            }
+            catch (IOException) when (attempt < DeleteAttempts - 1)
+            {
+                ReleaseCollectibleLoadContexts();
+            }
+        }
+
+        Directory.Delete(Path, recursive: true);
+    }
+
+    private static void ReleaseCollectibleLoadContexts()
+    {
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        GC.Collect();
+        Thread.Sleep(50);
+    }
 }
 
 file sealed record TestModContext(
