@@ -22,6 +22,8 @@ internal static unsafe class NativeBootstrapTestCallbacks
     internal static delegate* unmanaged[Cdecl]<ulong, ulong, int, uint, NativeUnrealParameter*, int> RegisteredHookCallback;
     internal static ulong RegisteredHookContext;
     internal static int RegisteredHookPhase;
+    internal static int RegisteredHookPriority;
+    internal static ulong RegisteredHookInstanceFilter;
     internal static NativeUnrealParameter[] RegisteredHookParameters = [];
     private const uint IntArrayKind = 17U | (6U << 8);
     private const uint NestedIntArrayKind = 17U | (17U << 8) | (6U << 16);
@@ -90,6 +92,8 @@ internal static unsafe class NativeBootstrapTestCallbacks
     internal static int UnrealRegisterHook(
         char* functionPath,
         int phase,
+        int priority,
+        ulong instanceFilter,
         uint parameterCount,
         NativeUnrealParameter* parameters,
         delegate* unmanaged[Cdecl]<ulong, ulong, int, uint, NativeUnrealParameter*, int> callback,
@@ -103,6 +107,8 @@ internal static unsafe class NativeBootstrapTestCallbacks
         RegisteredHookCallback = callback;
         RegisteredHookContext = context;
         RegisteredHookPhase = phase;
+        RegisteredHookPriority = priority;
+        RegisteredHookInstanceFilter = instanceFilter;
         RegisteredHookParameters = new NativeUnrealParameter[parameterCount];
         for (var index = 0; index < parameterCount; index++)
         {
@@ -122,6 +128,8 @@ internal static unsafe class NativeBootstrapTestCallbacks
         RegisteredHookCallback = null;
         RegisteredHookContext = 0;
         RegisteredHookPhase = 0;
+        RegisteredHookPriority = 0;
+        RegisteredHookInstanceFilter = 0;
         RegisteredHookParameters = [];
         return 0;
     }
@@ -649,7 +657,7 @@ internal static unsafe class NativeBootstrapTestCallbacks
         internal delegate* unmanaged[Cdecl]<ulong, char*, uint, NativeUnrealParameter*, int> UnrealInvoke;
         internal char* GameModsRoot;
         internal delegate* unmanaged[Cdecl]<char*, ulong*, uint, uint*, int> UnrealFindAllOf;
-        internal delegate* unmanaged[Cdecl]<char*, int, uint, NativeUnrealParameter*, delegate* unmanaged[Cdecl]<ulong, ulong, int, uint, NativeUnrealParameter*, int>, ulong, ulong*, int> UnrealRegisterHook;
+        internal delegate* unmanaged[Cdecl]<char*, int, int, ulong, uint, NativeUnrealParameter*, delegate* unmanaged[Cdecl]<ulong, ulong, int, uint, NativeUnrealParameter*, int>, ulong, ulong*, int> UnrealRegisterHook;
         internal delegate* unmanaged[Cdecl]<ulong, int> UnrealUnregisterHook;
     }
 

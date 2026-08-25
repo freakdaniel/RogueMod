@@ -1593,6 +1593,8 @@ namespace RogueMod
     std::int32_t UnrealReflectionApi::register_hook(
         const wchar_t* function_path,
         std::int32_t phase_value,
+        std::int32_t priority,
+        std::uint64_t instance_filter,
         std::uint32_t parameter_count,
         const UnrealParameter* parameters,
         UnrealHookCallback callback,
@@ -1618,6 +1620,10 @@ namespace RogueMod
         if (phase != UnrealHookPhase::Pre && phase != UnrealHookPhase::Post)
         {
             return -2;
+        }
+        if (instance_filter != 0 && resolve_handle(instance_filter) == nullptr)
+        {
+            return -7;
         }
 
         try
@@ -1656,6 +1662,8 @@ namespace RogueMod
             HookRegistration registration;
             registration.function = function;
             registration.phase = phase;
+            registration.priority = priority;
+            registration.instance_filter = instance_filter;
             registration.callback = callback;
             registration.context = context;
             if (parameter_count != 0)
@@ -1755,12 +1763,20 @@ namespace RogueMod
         }
         try
         {
+            const auto object_handle = make_handle(object);
+            if (object_handle == 0)
+            {
+                return;
+            }
             std::vector<HookRegistration> matching;
             {
                 std::shared_lock lock{m_hook_mutex};
                 for (const auto& registration : m_hooks)
                 {
-                    if (registration.phase == phase && registration.function == function)
+                    if (registration.phase == phase
+                        && registration.function == function
+                        && (registration.instance_filter == 0
+                            || registration.instance_filter == object_handle))
                     {
                         matching.push_back(registration);
                     }
@@ -1771,11 +1787,14 @@ namespace RogueMod
                 return;
             }
 
-            const auto object_handle = make_handle(object);
-            if (object_handle == 0)
-            {
-                return;
-            }
+            std::sort(
+                matching.begin(), matching.end(),
+                [](const HookRegistration& left, const HookRegistration& right)
+                {
+                    return left.priority != right.priority
+                        ? left.priority > right.priority
+                        : left.token < right.token;
+                });
             for (const auto& registration : matching)
             {
                 auto transported = registration.parameters;
@@ -1817,21 +1836,74 @@ namespace RogueMod
 
                 if (valid)
                 {
-                    registration.callback(
+                    const auto callback_result = registration.callback(
                         registration.context,
                         object_handle,
                         static_cast<std::int32_t>(phase),
                         static_cast<std::uint32_t>(transported.size()),
                         transported.empty() ? nullptr : transported.data());
+                    if (callback_result == 0)
+                    {
+                        for (std::size_t index = 0; index < transported.size(); ++index)
+                        {
+                            const auto& descriptor = registration.parameters[index];
+                            const auto& parameter = transported[index];
+                            const auto modified = (parameter.flags
+                                                   & static_cast<std::uint32_t>(UnrealParameterFlags::Modified)) != 0;
+                            const auto is_input = (descriptor.flags
+                                                   & static_cast<std::uint32_t>(UnrealParameterFlags::Input)) != 0;
+                            const auto is_output = (descriptor.flags
+                                                    & static_cast<std::uint32_t>(UnrealParameterFlags::Output)) != 0;
+                            const auto is_return = (descriptor.flags
+                                                    & static_cast<std::uint32_t>(UnrealParameterFlags::Return)) != 0;
+                            const auto may_replace = phase == UnrealHookPhase::Pre
+                                ? is_input
+                                : is_output || is_return;
+                            if (!modified || !may_replace || parameter.value.kind != descriptor.kind)
+                            {
+                                continue;
+                            }
+
+                            auto* address = static_cast<std::byte*>(parameter_buffer) + descriptor.offset;
+                            if (decode_kind(descriptor.kind) == UnrealPropertyKind::Boolean)
+                            {
+                                const auto byte_offset = static_cast<std::uint8_t>(descriptor.bool_layout);
+                                auto byte_mask = static_cast<std::uint8_t>(descriptor.bool_layout >> 8);
+                                if (byte_mask == 0)
+                                {
+                                    byte_mask = 1;
+                                }
+                                auto* boolean_address = reinterpret_cast<std::uint8_t*>(address) + byte_offset;
+                                if (parameter.value.data != 0)
+                                {
+                                    *boolean_address |= byte_mask;
+                                }
+                                else
+                                {
+                                    *boolean_address &= static_cast<std::uint8_t>(~byte_mask);
+                                }
+                            }
+                            else
+                            {
+                                (void)assign_typed_value(
+                                    registration.properties[index],
+                                    address,
+                                    descriptor.kind,
+                                    parameter.value);
+                            }
+                        }
+                    }
                 }
                 for (auto& parameter : transported)
                 {
                     free_marshaled_value(parameter.value);
                 }
             }
+            return;
         }
         catch (...)
         {
+            return;
         }
     }
 

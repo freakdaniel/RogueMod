@@ -92,6 +92,23 @@ internal static class CSharpTypeTranslator
                         ? $"UnrealOptional<{type.Element!.Name}>.FromUnrealValue({valueExpression}, hookOptional{containerDepth} => {ReadHookValueExpression(type.Element, $"hookOptional{containerDepth}", unrealExpression, containerDepth + 1)})"
                         : $"{valueExpression}.As<{type.Name}>()";
 
+    internal static string WriteHookValueExpression(
+        CsType type,
+        string valueExpression,
+        string descriptorOwnerExpression) =>
+        type.ObjectWrapper
+            ? $"UnrealValue.From({valueExpression}?.Handle ?? UnrealObjectHandle.Null)"
+            : type.StructAdapter
+                ? $"{valueExpression}.ToUnrealValue()"
+                : type.LazyObjectAdapter
+                    ? $"{valueExpression}.ToUnrealValue()"
+                    : type.ArrayAdapter || type.OptionalAdapter
+                        ? WriteValueExpression(
+                            type,
+                            valueExpression,
+                            ValueDescriptorExpression(type, descriptorOwnerExpression))
+                        : $"UnrealValue.From({valueExpression})";
+
     internal static string WriteValueExpression(CsType type, string valueExpression, string descriptorExpression)
     {
         if (type.Element is null)

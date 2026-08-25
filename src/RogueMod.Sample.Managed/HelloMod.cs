@@ -13,9 +13,13 @@ public sealed class HelloMod : IRogueMod, IRogueModGameEvents
     private bool _textSmokeLogged;
     private bool _nonEmptyArraySmokeLogged;
     private bool _objectEnumerationLogged;
-    private bool _hookCallbackLogged;
-    private bool _postHookCallbackLogged;
+    private bool _mutateAddYawInput;
+    private bool _mutateCanRestartPlayer;
+    private bool _nonMatchingInstanceHookInvoked;
+    private int _addYawInputHookStage;
     private IDisposable? _addYawInputHook;
+    private IDisposable? _addYawInputHighPriorityHook;
+    private IDisposable? _nonMatchingInstanceHook;
     private IDisposable? _canRestartPlayerHook;
 
     public ValueTask LoadAsync(IModContext context, CancellationToken cancellationToken = default)
@@ -30,6 +34,10 @@ public sealed class HelloMod : IRogueMod, IRogueModGameEvents
     {
         _addYawInputHook?.Dispose();
         _addYawInputHook = null;
+        _addYawInputHighPriorityHook?.Dispose();
+        _addYawInputHighPriorityHook = null;
+        _nonMatchingInstanceHook?.Dispose();
+        _nonMatchingInstanceHook = null;
         _canRestartPlayerHook?.Dispose();
         _canRestartPlayerHook = null;
         _logger?.Log(ModLogLevel.Information, "Hello managed mod unloaded.");
@@ -42,8 +50,10 @@ public sealed class HelloMod : IRogueMod, IRogueModGameEvents
         _textSmokeLogged = false;
         _nonEmptyArraySmokeLogged = false;
         _objectEnumerationLogged = false;
-        _hookCallbackLogged = false;
-        _postHookCallbackLogged = false;
+        _mutateAddYawInput = false;
+        _mutateCanRestartPlayer = false;
+        _nonMatchingInstanceHookInvoked = false;
+        _addYawInputHookStage = 0;
         return ValueTask.CompletedTask;
     }
 
@@ -95,43 +105,115 @@ public sealed class HelloMod : IRogueMod, IRogueModGameEvents
                         {
                             _addYawInputHook = PlayerControllerSdk.RegisterAddYawInputPreHook(
                                 _unreal,
-                                (_, value) =>
+                                (PlayerControllerSdk _, ref float value) =>
                                 {
-                                    if (!_hookCallbackLogged)
+                                    if (_mutateAddYawInput)
                                     {
-                                        _hookCallbackLogged = true;
+                                        if (_addYawInputHookStage != 1 || value != 0.5f)
+                                        {
+                                            throw new InvalidOperationException("UFunction hooks did not run in descending priority order.");
+                                        }
+                                        var original = value;
+                                        value = 0.0f;
+                                        _addYawInputHookStage = 2;
                                         _logger?.Log(
                                             ModLogLevel.Information,
-                                            $"Typed pre-hook succeeded: PlayerController.AddYawInput({value}).");
+                                            $"Typed priority-0 pre-hook chained: PlayerController.AddYawInput({original}) -> {value}.");
                                     }
-                                });
-                            _logger?.Log(ModLogLevel.Information, "Typed UFunction pre-hook registered: PlayerController.AddYawInput.");
+                                },
+                                new UnrealHookOptions(Priority: 0, Instance: playerController));
+                            _addYawInputHighPriorityHook = PlayerControllerSdk.RegisterAddYawInputPreHook(
+                                _unreal,
+                                (PlayerControllerSdk _, ref float value) =>
+                                {
+                                    if (_mutateAddYawInput)
+                                    {
+                                        if (_addYawInputHookStage != 0 || value != 0.25f)
+                                        {
+                                            throw new InvalidOperationException("The high-priority UFunction hook received an unexpected value.");
+                                        }
+                                        var original = value;
+                                        value = 0.5f;
+                                        _addYawInputHookStage = 1;
+                                        _logger?.Log(
+                                            ModLogLevel.Information,
+                                            $"Typed priority-100 pre-hook ran first: PlayerController.AddYawInput({original}) -> {value}.");
+                                    }
+                                },
+                                new UnrealHookOptions(Priority: 100, Instance: playerController));
+                            var nonMatchingInstance = _unreal.GetClass(playerController);
+                            _nonMatchingInstanceHook = PlayerControllerSdk.RegisterAddYawInputPreHook(
+                                _unreal,
+                                (PlayerControllerSdk _, ref float _) => _nonMatchingInstanceHookInvoked = true,
+                                new UnrealHookOptions(Priority: int.MaxValue, Instance: nonMatchingInstance));
+                            _logger?.Log(
+                                ModLogLevel.Information,
+                                "Typed instance-filtered UFunction pre-hook chain registered: PlayerController.AddYawInput.");
                         }
                         if (_canRestartPlayerHook is null
                             && (_unreal.Capabilities & UnrealReflectionCapabilities.FunctionHooks) != 0)
                         {
                             _canRestartPlayerHook = PlayerControllerSdk.RegisterCanRestartPlayerPostHook(
                                 _unreal,
-                                (_, value) =>
+                                (PlayerControllerSdk _, ref bool value) =>
                                 {
-                                    if (!_postHookCallbackLogged)
+                                    if (_mutateCanRestartPlayer)
                                     {
-                                        _postHookCallbackLogged = true;
+                                        var original = value;
+                                        value = false;
                                         _logger?.Log(
                                             ModLogLevel.Information,
-                                            $"Typed post-hook succeeded: PlayerController.CanRestartPlayer()={value}.");
+                                            $"Typed post-hook mutation requested: PlayerController.CanRestartPlayer() {original} -> {value}.");
                                     }
-                                });
-                            _logger?.Log(ModLogLevel.Information, "Typed UFunction post-hook registered: PlayerController.CanRestartPlayer.");
+                                },
+                                new UnrealHookOptions(Priority: 50, Instance: playerController));
+                            _logger?.Log(
+                                ModLogLevel.Information,
+                                "Typed instance-filtered UFunction post-hook registered: PlayerController.CanRestartPlayer.");
                         }
                         controller.ResetControllerLightColor();
                         _logger?.Log(ModLogLevel.Information, "Typed UFunction call succeeded: PlayerController.ResetControllerLightColor().");
-                        controller.AddYawInput(0.0f);
-                        _logger?.Log(ModLogLevel.Information, "Typed input marshalling succeeded: PlayerController.AddYawInput(0.0f).");
-                        var canRestartPlayer = controller.CanRestartPlayer();
+                        _mutateAddYawInput = true;
+                        _addYawInputHookStage = 0;
+                        try
+                        {
+                            controller.AddYawInput(0.25f);
+                        }
+                        finally
+                        {
+                            _mutateAddYawInput = false;
+                        }
+                        if (_addYawInputHookStage != 2)
+                        {
+                            throw new InvalidOperationException("The ordered UFunction pre-hook chain did not complete.");
+                        }
+                        if (_nonMatchingInstanceHookInvoked)
+                        {
+                            throw new InvalidOperationException("A UFunction hook ran for an object outside its instance filter.");
+                        }
                         _logger?.Log(
                             ModLogLevel.Information,
-                            $"Typed return marshalling succeeded: PlayerController.CanRestartPlayer()={canRestartPlayer}.");
+                            "Typed ordered pre-hook chain completed: PlayerController.AddYawInput(0.25f) -> 0.5f -> 0.0f.");
+                        _logger?.Log(
+                            ModLogLevel.Information,
+                            "Typed native instance filter rejected a valid non-matching UObject handle.");
+                        bool canRestartPlayer;
+                        _mutateCanRestartPlayer = true;
+                        try
+                        {
+                            canRestartPlayer = controller.CanRestartPlayer();
+                        }
+                        finally
+                        {
+                            _mutateCanRestartPlayer = false;
+                        }
+                        if (canRestartPlayer)
+                        {
+                            throw new InvalidOperationException("Typed post-hook return mutation did not reach the calling wrapper.");
+                        }
+                        _logger?.Log(
+                            ModLogLevel.Information,
+                            "Typed post-hook return mutation completed: PlayerController.CanRestartPlayer()=False.");
                         var fullTickWhenPaused = controller.bShouldPerformFullTickWhenPaused;
                         _logger?.Log(
                             ModLogLevel.Information,
@@ -400,34 +482,56 @@ public sealed class HelloMod : IRogueMod, IRogueModGameEvents
         public void AddYawInput(float value) =>
             Call(AddYawInputFunction, new UnrealArgument("Val", UnrealValue.From(value)));
 
+        public delegate void AddYawInputPreHookHandler(PlayerControllerSdk context, ref float value);
+
         public static IDisposable RegisterAddYawInputPreHook(
             IUnrealReflection unreal,
-            Action<PlayerControllerSdk, float> callback)
+            AddYawInputPreHookHandler callback,
+            UnrealHookOptions options = default)
         {
             ArgumentNullException.ThrowIfNull(unreal);
             ArgumentNullException.ThrowIfNull(callback);
             return unreal.RegisterHook(
                 AddYawInputFunction,
                 UnrealHookPhase.Pre,
-                hook => callback(
-                    new PlayerControllerSdk(unreal, hook.Object),
-                    hook.Arguments["Val"].As<float>()));
+                options,
+                hook =>
+                {
+                    var value = hook.Arguments["Val"].As<float>();
+                    var original = value;
+                    callback(new PlayerControllerSdk(unreal, hook.Object), ref value);
+                    if (value != original)
+                    {
+                        hook.SetArgument("Val", UnrealValue.From(value));
+                    }
+                });
         }
 
         public bool CanRestartPlayer() => Call(CanRestartPlayerFunction).ReturnValue.As<bool>();
 
+        public delegate void CanRestartPlayerPostHookHandler(PlayerControllerSdk context, ref bool returnValue);
+
         public static IDisposable RegisterCanRestartPlayerPostHook(
             IUnrealReflection unreal,
-            Action<PlayerControllerSdk, bool> callback)
+            CanRestartPlayerPostHookHandler callback,
+            UnrealHookOptions options = default)
         {
             ArgumentNullException.ThrowIfNull(unreal);
             ArgumentNullException.ThrowIfNull(callback);
             return unreal.RegisterHook(
                 CanRestartPlayerFunction,
                 UnrealHookPhase.Post,
-                hook => callback(
-                    new PlayerControllerSdk(unreal, hook.Object),
-                    hook.Result.ReturnValue.As<bool>()));
+                options,
+                hook =>
+                {
+                    var returnValue = hook.Result.ReturnValue.As<bool>();
+                    var original = returnValue;
+                    callback(new PlayerControllerSdk(unreal, hook.Object), ref returnValue);
+                    if (returnValue != original)
+                    {
+                        hook.SetReturnValue(UnrealValue.From(returnValue));
+                    }
+                });
         }
 
         public string GetAttachParentSocketName() =>

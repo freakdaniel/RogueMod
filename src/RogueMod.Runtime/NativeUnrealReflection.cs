@@ -18,7 +18,7 @@ internal sealed unsafe class NativeUnrealReflection(
     delegate* unmanaged[Cdecl]<ulong, char*, uint, NativeUnrealReflection.NativeUnrealValue*, int> writeProperty,
     delegate* unmanaged[Cdecl]<ulong, char*, uint, NativeUnrealReflection.NativeUnrealParameter*, int> invokeFunction,
     delegate* unmanaged[Cdecl]<char*, ulong*, uint, uint*, int> findAllOf,
-    delegate* unmanaged[Cdecl]<char*, int, uint, NativeUnrealReflection.NativeUnrealParameter*, delegate* unmanaged[Cdecl]<ulong, ulong, int, uint, NativeUnrealReflection.NativeUnrealParameter*, int>, ulong, ulong*, int> registerHook,
+    delegate* unmanaged[Cdecl]<char*, int, int, ulong, uint, NativeUnrealReflection.NativeUnrealParameter*, delegate* unmanaged[Cdecl]<ulong, ulong, int, uint, NativeUnrealReflection.NativeUnrealParameter*, int>, ulong, ulong*, int> registerHook,
     delegate* unmanaged[Cdecl]<ulong, int> unregisterHook,
     Action<ModLogLevel, string> log) : IUnrealReflection
 {
@@ -246,6 +246,13 @@ internal sealed unsafe class NativeUnrealReflection(
     public IDisposable RegisterHook(
         UnrealFunctionDescriptor function,
         UnrealHookPhase phase,
+        Action<UnrealHookContext> callback) =>
+        RegisterHook(function, phase, default, callback);
+
+    public IDisposable RegisterHook(
+        UnrealFunctionDescriptor function,
+        UnrealHookPhase phase,
+        UnrealHookOptions options,
         Action<UnrealHookContext> callback)
     {
         ArgumentNullException.ThrowIfNull(function);
@@ -258,10 +265,18 @@ internal sealed unsafe class NativeUnrealReflection(
         {
             throw new NotSupportedException("The active RogueMod bridge does not support UFunction hooks.");
         }
+        if (!options.Instance.IsNull && !IsValid(options.Instance))
+        {
+            throw new InvalidOperationException("A UFunction hook cannot target an invalid Unreal object handle.");
+        }
 
         var nativeParameters = CreateNativeParameterDescriptors(function);
         var context = unchecked((ulong)Interlocked.Increment(ref nextHookContext));
-        var registration = new HookRegistration(this, function, phase, callback);
+        var registration = new HookRegistration(
+            this,
+            function,
+            phase,
+            callback);
         if (!HookRegistrations.TryAdd(context, registration))
         {
             throw new InvalidOperationException("Could not allocate a unique managed UFunction hook context.");
@@ -275,6 +290,8 @@ internal sealed unsafe class NativeUnrealReflection(
             result = registerHook(
                 functionPath,
                 (int)phase,
+                options.Priority,
+                options.Instance.Value,
                 (uint)nativeParameters.Length,
                 parameterPointer,
                 &DispatchHook,
@@ -289,6 +306,11 @@ internal sealed unsafe class NativeUnrealReflection(
                 throw new InvalidOperationException(
                     $"UFunction '{function.Path}' no longer matches its generated hook descriptor (native status {result}). " +
                     "Regenerate the SDK from a current JMAP dump.");
+            }
+            if (result == -7)
+            {
+                throw new InvalidOperationException(
+                    $"The instance filter for UFunction '{function.Path}' became invalid during native hook registration.");
             }
             throw new InvalidOperationException($"UFunction hook registration for '{function.Path}' failed with native status {result}.");
         }
@@ -383,12 +405,14 @@ internal sealed unsafe class NativeUnrealReflection(
                 }
             }
 
-            registration.Callback(new UnrealHookContext(
+            var hook = new UnrealHookContext(
                 new UnrealObjectHandle(objectHandle),
                 registration.Function,
                 phase,
                 arguments,
-                new UnrealInvocationResult(returnValue, outputs)));
+                new UnrealInvocationResult(returnValue, outputs));
+            registration.Callback(hook);
+            ApplyHookReplacements(hook, parameters);
             return 0;
         }
         catch (Exception exception)
@@ -401,6 +425,54 @@ internal sealed unsafe class NativeUnrealReflection(
 
     private void LogHookFailure(string functionPath, Exception exception) =>
         log(ModLogLevel.Error, $"Disabled UFunction hook callback for '{functionPath}' after an exception: {exception}");
+
+    private static void ApplyHookReplacements(
+        UnrealHookContext hook,
+        NativeUnrealParameter* parameters)
+    {
+        for (var index = 0; index < hook.Function.ParameterList.Count; index++)
+        {
+            var descriptor = hook.Function.ParameterList[index];
+            UnrealValue? replacement = null;
+            if (hook.Phase == UnrealHookPhase.Pre
+                && descriptor.IsInput
+                && hook.ArgumentReplacements.TryGetValue(descriptor.Name, out var argumentReplacement))
+            {
+                replacement = argumentReplacement;
+            }
+            else if (hook.Phase == UnrealHookPhase.Post && descriptor.IsReturn)
+            {
+                replacement = hook.ReturnReplacement;
+            }
+            else if (hook.Phase == UnrealHookPhase.Post && descriptor.IsOutput
+                && hook.OutputReplacements.TryGetValue(descriptor.Name, out var outputReplacement))
+            {
+                replacement = outputReplacement;
+            }
+            if (replacement is not { } replacementValue)
+            {
+                continue;
+            }
+
+            var kind = GetPropertyKind(descriptor.UnrealType, descriptor.Size);
+            using var replacementAllocations = new NativeAllocations();
+            var nativeValue = ToNativeValue(
+                kind,
+                parameters[index].Kind,
+                replacementValue,
+                descriptor.Struct,
+                descriptor.Array,
+                descriptor.Optional,
+                replacementAllocations);
+
+            // The native bridge owns both the incoming snapshot and the replacement after
+            // this callback returns. Release the old wire value before handing over the new one.
+            FreeNativeAllocation(parameters[index].Kind, parameters[index].Value, null);
+            parameters[index].Value = nativeValue;
+            parameters[index].Flags |= (uint)NativeParameterFlags.Modified;
+            replacementAllocations.Release();
+        }
+    }
 
     public UnrealValue ReadProperty(UnrealObjectHandle handle, UnrealPropertyDescriptor property)
     {
@@ -598,7 +670,7 @@ internal sealed unsafe class NativeUnrealReflection(
         }
         if (encodedValueKind > MaximumEncodedValueKind)
         {
-            throw new NotSupportedException("RogueMod ABI 11 supports at most three nested container levels.");
+            throw new NotSupportedException("RogueMod ABI 13 supports at most three nested container levels.");
         }
         return (uint)kind | encodedValueKind << ContainerValueKindShift;
     }
@@ -1216,6 +1288,8 @@ internal sealed unsafe class NativeUnrealReflection(
         internal bool Contains(ulong pointer) =>
             allocations.Contains(unchecked((nint)pointer));
 
+        internal void Release() => allocations.Clear();
+
         public void Dispose()
         {
             foreach (var pointer in allocations)
@@ -1285,7 +1359,8 @@ internal sealed unsafe class NativeUnrealReflection(
     {
         Input = 1,
         Output = 2,
-        Return = 4
+        Return = 4,
+        Modified = 8
     }
 
 }

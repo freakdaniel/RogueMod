@@ -41,7 +41,7 @@ internal static class NativeReflectionTypeRegistry
             "StructProperty" when size > 0 => NativePropertyKind.Struct,
             "ArrayProperty" when size == 16 => NativePropertyKind.Array,
             "OptionalProperty" when size > 0 => NativePropertyKind.Optional,
-            _ => throw new NotSupportedException($"Property type '{unrealType}' is not supported by RogueMod ABI 11.")
+            _ => throw new NotSupportedException($"Property type '{unrealType}' is not supported by RogueMod ABI 13.")
         };
     }
 

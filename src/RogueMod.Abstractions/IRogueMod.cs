@@ -73,6 +73,20 @@ public interface IUnrealReflection
         UnrealHookPhase phase,
         Action<UnrealHookContext> callback) =>
         throw new NotSupportedException("The active RogueMod bridge does not support UFunction hooks.");
+
+    /// <summary>Registers a UFunction hook with deterministic ordering and an optional exact-object filter.</summary>
+    IDisposable RegisterHook(
+        UnrealFunctionDescriptor function,
+        UnrealHookPhase phase,
+        UnrealHookOptions options,
+        Action<UnrealHookContext> callback)
+    {
+        if (options != default)
+        {
+            throw new NotSupportedException("The active RogueMod bridge does not support ordered or instance-filtered UFunction hooks.");
+        }
+        return RegisterHook(function, phase, callback);
+    }
 }
 
 [Flags]
@@ -96,6 +110,14 @@ public enum UnrealHookPhase
     Pre = 1,
     Post = 2
 }
+
+/// <summary>
+/// Registration policy for a UFunction hook. Higher priorities run first; equal priorities
+/// retain registration order. A null instance handle matches every object.
+/// </summary>
+public readonly record struct UnrealHookOptions(
+    int Priority = 0,
+    UnrealObjectHandle Instance = default);
 
 public readonly record struct UnrealObjectHandle(ulong Value)
 {
@@ -444,13 +466,94 @@ public sealed record UnrealInvocationResult(
     }
 }
 
-/// <summary>A read-only snapshot of a hooked UFunction call.</summary>
-public sealed record UnrealHookContext(
-    UnrealObjectHandle Object,
-    UnrealFunctionDescriptor Function,
-    UnrealHookPhase Phase,
-    IReadOnlyDictionary<string, UnrealValue> Arguments,
-    UnrealInvocationResult Result);
+/// <summary>
+/// A snapshot of a hooked UFunction call. Pre hooks may replace input/ref arguments;
+/// post hooks may replace the return value and out/ref arguments.
+/// </summary>
+public sealed class UnrealHookContext
+{
+    private readonly Dictionary<string, UnrealValue> argumentReplacements = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, UnrealValue> outputReplacements = new(StringComparer.Ordinal);
+    private UnrealValue? returnReplacement;
+
+    public UnrealHookContext(
+        UnrealObjectHandle @object,
+        UnrealFunctionDescriptor function,
+        UnrealHookPhase phase,
+        IReadOnlyDictionary<string, UnrealValue> arguments,
+        UnrealInvocationResult result)
+    {
+        Object = @object;
+        Function = function ?? throw new ArgumentNullException(nameof(function));
+        Phase = phase;
+        Arguments = arguments ?? throw new ArgumentNullException(nameof(arguments));
+        Result = result ?? throw new ArgumentNullException(nameof(result));
+    }
+
+    public UnrealObjectHandle Object { get; }
+
+    public UnrealFunctionDescriptor Function { get; }
+
+    public UnrealHookPhase Phase { get; }
+
+    public IReadOnlyDictionary<string, UnrealValue> Arguments { get; }
+
+    public UnrealInvocationResult Result { get; }
+
+    /// <summary>Replaces an input or reference parameter before the original UFunction runs.</summary>
+    public void SetArgument(string name, UnrealValue value)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        if (Phase != UnrealHookPhase.Pre)
+        {
+            throw new InvalidOperationException("UFunction arguments can only be replaced from a pre hook.");
+        }
+        var descriptor = Function.ParameterList.FirstOrDefault(parameter =>
+            parameter.IsInput && StringComparer.Ordinal.Equals(parameter.Name, name));
+        if (descriptor is null)
+        {
+            throw new ArgumentException($"UFunction '{Function.Path}' has no input or ref parameter named '{name}'.", nameof(name));
+        }
+        argumentReplacements[name] = value;
+    }
+
+    /// <summary>Replaces the UFunction return value after the original call.</summary>
+    public void SetReturnValue(UnrealValue value)
+    {
+        if (Phase != UnrealHookPhase.Post)
+        {
+            throw new InvalidOperationException("A UFunction return value can only be replaced from a post hook.");
+        }
+        if (!Function.ParameterList.Any(parameter => parameter.IsReturn))
+        {
+            throw new InvalidOperationException($"UFunction '{Function.Path}' has no return value.");
+        }
+        returnReplacement = value;
+    }
+
+    /// <summary>Replaces an out or reference parameter after the original call.</summary>
+    public void SetOutArgument(string name, UnrealValue value)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        if (Phase != UnrealHookPhase.Post)
+        {
+            throw new InvalidOperationException("UFunction out/ref arguments can only be replaced from a post hook.");
+        }
+        var descriptor = Function.ParameterList.FirstOrDefault(parameter =>
+            parameter.IsOutput && !parameter.IsReturn && StringComparer.Ordinal.Equals(parameter.Name, name));
+        if (descriptor is null)
+        {
+            throw new ArgumentException($"UFunction '{Function.Path}' has no out or ref parameter named '{name}'.", nameof(name));
+        }
+        outputReplacements[name] = value;
+    }
+
+    internal IReadOnlyDictionary<string, UnrealValue> ArgumentReplacements => argumentReplacements;
+
+    internal IReadOnlyDictionary<string, UnrealValue> OutputReplacements => outputReplacements;
+
+    internal UnrealValue? ReturnReplacement => returnReplacement;
+}
 
 /// <summary>Value adapters used by strongly typed generated hook callbacks.</summary>
 public static class UnrealHookValue

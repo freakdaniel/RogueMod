@@ -4,7 +4,7 @@
 
 namespace RogueMod
 {
-    inline constexpr std::uint32_t HostAbiVersion = 11;
+    inline constexpr std::uint32_t HostAbiVersion = 13;
 
     enum class LogLevel : std::int32_t
     {
@@ -55,6 +55,7 @@ namespace RogueMod
         Input = 1U << 0,
         Output = 1U << 1,
         Return = 1U << 2,
+        Modified = 1U << 3,
     };
 
     struct UnrealParameter
@@ -127,6 +128,8 @@ namespace RogueMod
         std::int32_t(__cdecl* unreal_register_hook)(
             const wchar_t* function_path,
             std::int32_t phase,
+            std::int32_t priority,
+            std::uint64_t instance_filter,
             std::uint32_t parameter_count,
             const UnrealParameter* parameters,
             UnrealHookCallback callback,

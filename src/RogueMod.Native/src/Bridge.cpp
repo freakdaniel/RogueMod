@@ -211,6 +211,8 @@ namespace
     std::int32_t __cdecl unreal_register_hook(
         const wchar_t* function_path,
         std::int32_t phase,
+        std::int32_t priority,
+        std::uint64_t instance_filter,
         std::uint32_t parameter_count,
         const RogueMod::UnrealParameter* parameters,
         RogueMod::UnrealHookCallback callback,
@@ -218,7 +220,7 @@ namespace
         std::uint64_t* token)
     {
         return UnrealReflection.register_hook(
-            function_path, phase, parameter_count, parameters, callback, context, token);
+            function_path, phase, priority, instance_filter, parameter_count, parameters, callback, context, token);
     }
 
     std::int32_t __cdecl unreal_unregister_hook(std::uint64_t token)

@@ -55,6 +55,8 @@ namespace RogueMod
         [[nodiscard]] std::int32_t register_hook(
             const wchar_t* function_path,
             std::int32_t phase,
+            std::int32_t priority,
+            std::uint64_t instance_filter,
             std::uint32_t parameter_count,
             const UnrealParameter* parameters,
             UnrealHookCallback callback,
@@ -131,13 +133,19 @@ namespace RogueMod
             const UnrealValue& value) const;
         void destroy_array_value(void* property, void* address, std::uint32_t encoded_kind) const;
         void destroy_optional_value(void* property, void* address) const;
-        void dispatch_hook(UnrealHookPhase phase, void* object, void* function, void* parameters) const noexcept;
+        void dispatch_hook(
+            UnrealHookPhase phase,
+            void* object,
+            void* function,
+            void* parameters) const noexcept;
 
         struct HookRegistration
         {
             std::uint64_t token{};
             void* function{};
             UnrealHookPhase phase{};
+            std::int32_t priority{};
+            std::uint64_t instance_filter{};
             std::vector<UnrealParameter> parameters;
             std::vector<void*> properties;
             UnrealHookCallback callback{};

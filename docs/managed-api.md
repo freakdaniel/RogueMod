@@ -54,17 +54,22 @@ if (context.Unreal.IsAvailable)
 
 Reflection becomes available on the first `Update` and must be used on the game thread. Check `IUnrealReflection.Capabilities` before optional operations.
 
-ABI 11 supports `FindFirstOf`, `FindAllOf`, `IsValid`, `GetClass`, `GetPathName`, property reads and writes, input, return, and out/ref `UFunction` parameters, and read-only pre/post UFunction hooks. Generated wrappers implement `IUnrealObjectType<T>`, so mod code can use `context.Unreal.FindFirst<MyType>()` and `context.Unreal.FindAll<MyType>()` without class-name strings or manual wrapper construction. Supported scalar kinds are bool, signed and unsigned integers, enums, float, double, strong, weak, and lazy object/class handles, `FString`, `FName`, and `FText`. `TArray` values use recursive `IReadOnlyList<T>` wrappers for up to three array containers and require the `NestedArrays` capability when nested. `TOptional<T>` uses `UnrealOptional<T>` and requires `OptionalValues`; this preserves set/unset separately from null. Weak object properties require `WeakObjectReferences`; their generated wrappers do not root the UObject and retain the normal serial validation. Lazy properties require `LazyObjectReferences` and use `UnrealLazyObjectReference<T>` so `ObjectId` remains available while `CachedTarget` is pending, uncached, or unloaded. Unreal strings and text are exposed as C# `string`; embedded null characters and values longer than 1,048,576 UTF-16 code units are rejected. Writing an `FText` creates display text from the supplied string and therefore does not preserve the original localization history or namespace/key identity.
+ABI 13 supports `FindFirstOf`, `FindAllOf`, `IsValid`, `GetClass`, `GetPathName`, property reads and writes, input, return, and out/ref `UFunction` parameters, and mutable pre/post UFunction hooks. Generated wrappers implement `IUnrealObjectType<T>`, so mod code can use `context.Unreal.FindFirst<MyType>()` and `context.Unreal.FindAll<MyType>()` without class-name strings or manual wrapper construction. Supported scalar kinds are bool, signed and unsigned integers, enums, float, double, strong, weak, and lazy object/class handles, `FString`, `FName`, and `FText`. `TArray` values use recursive `IReadOnlyList<T>` wrappers for up to three array containers and require the `NestedArrays` capability when nested. `TOptional<T>` uses `UnrealOptional<T>` and requires `OptionalValues`; this preserves set/unset separately from null. Weak object properties require `WeakObjectReferences`; their generated wrappers do not root the UObject and retain the normal serial validation. Lazy properties require `LazyObjectReferences` and use `UnrealLazyObjectReference<T>` so `ObjectId` remains available while `CachedTarget` is pending, uncached, or unloaded. Unreal strings and text are exposed as C# `string`; embedded null characters and values longer than 1,048,576 UTF-16 code units are rejected. Writing an `FText` creates display text from the supplied string and therefore does not preserve the original localization history or namespace/key identity.
 
 Generated classes expose `Register<Function>PreHook` and `Register<Function>PostHook`. Their callback delegates contain the generated owner wrapper and translated parameter types, including structs, arrays, optionals, and object wrappers. Keep the returned `IDisposable` when a hook should be removed early. The runtime also removes every remaining subscription automatically when its owning mod unloads. Check `UnrealReflectionCapabilities.FunctionHooks` before optional registration when supporting older bridge installations.
 
 ```csharp
 var subscription = PlayerController.RegisterAddYawInputPreHook(
     context.Unreal,
-    (controller, value) => context.Logger.Log(
-        ModLogLevel.Information,
-        $"{controller.PathName}: AddYawInput({value})"));
+    (PlayerController controller, ref float value) =>
+    {
+        context.Logger.Log(ModLogLevel.Information, $"{controller.PathName}: AddYawInput({value})");
+        value *= 0.5f;
+    },
+    new UnrealHookOptions(Priority: 100, Instance: playerController.Handle));
 ```
+
+Generated post hooks use the same shape for return and out/ref values. Assigning the `ref` value requests replacement; leaving it unchanged avoids a native write. The optional `UnrealHookOptions` argument defaults to priority zero and all instances. Higher values run first, equal priorities are stable, and a non-null `Instance` is validated during registration and filtered before entering managed code. Hook cancellation is not exposed because the installed UE4SS callback ABI does not provide safe control over the original call.
 
 Plain-old-data script structs are transported field by field through generated adapters. This includes nested POD structs whose JMAP metadata marks them `STRUCT_IsPlainOldData` and `STRUCT_NoDestructor`. The runtime validates the struct path, declared size, field bounds, scalar widths, bool masks, and nested descriptors before crossing the native boundary. It never copies CLR object layout into an Unreal buffer.
 

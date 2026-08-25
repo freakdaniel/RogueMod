@@ -559,73 +559,146 @@ public sealed class CSharpSdkGenerator
 
         var preParts = new List<string> { $"{ownerTypeName} context" };
         var usedPreNames = new HashSet<string>(StringComparer.Ordinal) { "context" };
-        preParts.AddRange(inputs.Select(input =>
-            $"{ResolveType(input.Type, input.ArrayDimension, typeNames, supportedStructPaths).Name} " +
-            UniqueIdentifier(ToCamelCase(input.Name), usedPreNames)));
+        var preParameters = inputs.Select(input =>
+        {
+            var type = ResolveType(input.Type, input.ArrayDimension, typeNames, supportedStructPaths);
+            return (Property: input, Type: type, Name: UniqueIdentifier(ToCamelCase(input.Name), usedPreNames));
+        }).ToArray();
+        preParts.AddRange(preParameters.Select(parameter => $"ref {parameter.Type.Name} {parameter.Name}"));
 
         var postParts = new List<string> { $"{ownerTypeName} context" };
         var usedPostNames = new HashSet<string>(StringComparer.Ordinal) { "context", "returnValue" };
+        (UnrealSdkProperty Property, CsType Type, string Name)? postReturn = null;
         if (returnParameter is not null)
         {
-            postParts.Add($"{ResolveType(returnParameter.Type, returnParameter.ArrayDimension, typeNames, supportedStructPaths).Name} returnValue");
+            var type = ResolveType(returnParameter.Type, returnParameter.ArrayDimension, typeNames, supportedStructPaths);
+            postReturn = (returnParameter, type, "returnValue");
+            postParts.Add($"ref {type.Name} returnValue");
         }
-        postParts.AddRange(outputs.Select(output =>
-            $"{ResolveType(output.Type, output.ArrayDimension, typeNames, supportedStructPaths).Name} " +
-            UniqueIdentifier(ToCamelCase(output.Name), usedPostNames)));
+        var postOutputs = outputs.Select(output =>
+        {
+            var type = ResolveType(output.Type, output.ArrayDimension, typeNames, supportedStructPaths);
+            return (Property: output, Type: type, Name: UniqueIdentifier(ToCamelCase(output.Name), usedPostNames));
+        }).ToArray();
+        postParts.AddRange(postOutputs.Select(parameter => $"ref {parameter.Type.Name} {parameter.Name}"));
 
         builder.AppendLine();
         builder.Append("    public delegate void ").Append(preHandlerName).Append('(')
             .Append(string.Join(", ", preParts)).AppendLine(");");
         builder.Append("    public static IDisposable ").Append(preMethodName)
-            .Append("(IUnrealReflection unreal, ").Append(preHandlerName).AppendLine(" callback)");
+            .Append("(IUnrealReflection unreal, ").Append(preHandlerName)
+            .AppendLine(" callback, UnrealHookOptions options = default)");
         builder.AppendLine("    {");
         builder.AppendLine("        ArgumentNullException.ThrowIfNull(unreal);");
         builder.AppendLine("        ArgumentNullException.ThrowIfNull(callback);");
         builder.Append("        return unreal.RegisterHook(").Append(descriptorName)
-            .AppendLine(", UnrealHookPhase.Pre, hook => callback(");
-        builder.Append("            new ").Append(ownerTypeName).Append("(unreal, hook.Object)");
-        foreach (var input in inputs)
+            .AppendLine(", UnrealHookPhase.Pre, options, hook =>");
+        builder.AppendLine("        {");
+        for (var index = 0; index < preParameters.Length; index++)
         {
-            var type = ResolveType(input.Type, input.ArrayDimension, typeNames, supportedStructPaths);
-            builder.AppendLine(",");
-            builder.Append("            ").Append(CSharpTypeTranslator.ReadHookValueExpression(
-                type,
-                $"hook.Arguments[{Literal(input.Name)}]",
-                "unreal"));
+            var parameter = preParameters[index];
+            builder.Append("            var ").Append(parameter.Name).Append(" = ")
+                .Append(CSharpTypeTranslator.ReadHookValueExpression(
+                    parameter.Type,
+                    $"hook.Arguments[{Literal(parameter.Property.Name)}]",
+                    "unreal"))
+                .AppendLine(";");
+            builder.Append("            var original").Append(index).Append(" = ").Append(parameter.Name).AppendLine(";");
         }
-        builder.AppendLine("));");
+        builder.Append("            callback(new ").Append(ownerTypeName).Append("(unreal, hook.Object)");
+        foreach (var parameter in preParameters)
+        {
+            builder.Append(", ref ").Append(parameter.Name);
+        }
+        builder.AppendLine(");");
+        for (var index = 0; index < preParameters.Length; index++)
+        {
+            var parameter = preParameters[index];
+            builder.Append("            if (!EqualityComparer<").Append(parameter.Type.Name)
+                .Append(">.Default.Equals(").Append(parameter.Name).Append(", original").Append(index).AppendLine("))");
+            builder.AppendLine("            {");
+            builder.Append("                hook.SetArgument(").Append(Literal(parameter.Property.Name)).Append(", ")
+                .Append(CSharpTypeTranslator.WriteHookValueExpression(
+                    parameter.Type,
+                    parameter.Name,
+                    $"{descriptorName}.ParameterList[{IndexOf(function.Parameters, parameter.Property)}]"))
+                .AppendLine(");");
+            builder.AppendLine("            }");
+        }
+        builder.AppendLine("        });");
         builder.AppendLine("    }");
 
         builder.AppendLine();
         builder.Append("    public delegate void ").Append(postHandlerName).Append('(')
             .Append(string.Join(", ", postParts)).AppendLine(");");
         builder.Append("    public static IDisposable ").Append(postMethodName)
-            .Append("(IUnrealReflection unreal, ").Append(postHandlerName).AppendLine(" callback)");
+            .Append("(IUnrealReflection unreal, ").Append(postHandlerName)
+            .AppendLine(" callback, UnrealHookOptions options = default)");
         builder.AppendLine("    {");
         builder.AppendLine("        ArgumentNullException.ThrowIfNull(unreal);");
         builder.AppendLine("        ArgumentNullException.ThrowIfNull(callback);");
         builder.Append("        return unreal.RegisterHook(").Append(descriptorName)
-            .AppendLine(", UnrealHookPhase.Post, hook => callback(");
-        builder.Append("            new ").Append(ownerTypeName).Append("(unreal, hook.Object)");
-        if (returnParameter is not null)
+            .AppendLine(", UnrealHookPhase.Post, options, hook =>");
+        builder.AppendLine("        {");
+        if (postReturn is { } returned)
         {
-            var type = ResolveType(returnParameter.Type, returnParameter.ArrayDimension, typeNames, supportedStructPaths);
-            builder.AppendLine(",");
-            builder.Append("            ").Append(CSharpTypeTranslator.ReadHookValueExpression(
-                type,
+            builder.Append("            var returnValue = ")
+                .Append(CSharpTypeTranslator.ReadHookValueExpression(
+                returned.Type,
                 "hook.Result.ReturnValue",
-                "unreal"));
+                "unreal"))
+                .AppendLine(";");
+            builder.AppendLine("            var originalReturnValue = returnValue;");
         }
-        foreach (var output in outputs)
+        for (var index = 0; index < postOutputs.Length; index++)
         {
-            var type = ResolveType(output.Type, output.ArrayDimension, typeNames, supportedStructPaths);
-            builder.AppendLine(",");
-            builder.Append("            ").Append(CSharpTypeTranslator.ReadHookValueExpression(
-                type,
-                $"hook.Result.OutArguments[{Literal(output.Name)}]",
-                "unreal"));
+            var parameter = postOutputs[index];
+            builder.Append("            var ").Append(parameter.Name).Append(" = ")
+                .Append(CSharpTypeTranslator.ReadHookValueExpression(
+                    parameter.Type,
+                    $"hook.Result.OutArguments[{Literal(parameter.Property.Name)}]",
+                    "unreal"))
+                .AppendLine(";");
+            builder.Append("            var originalOutput").Append(index).Append(" = ").Append(parameter.Name).AppendLine(";");
         }
-        builder.AppendLine("));");
+        builder.Append("            callback(new ").Append(ownerTypeName).Append("(unreal, hook.Object)");
+        if (postReturn is not null)
+        {
+            builder.Append(", ref returnValue");
+        }
+        foreach (var parameter in postOutputs)
+        {
+            builder.Append(", ref ").Append(parameter.Name);
+        }
+        builder.AppendLine(");");
+        if (postReturn is { } returnedValue)
+        {
+            builder.Append("            if (!EqualityComparer<").Append(returnedValue.Type.Name)
+                .AppendLine(">.Default.Equals(returnValue, originalReturnValue))");
+            builder.AppendLine("            {");
+            builder.Append("                hook.SetReturnValue(")
+                .Append(CSharpTypeTranslator.WriteHookValueExpression(
+                    returnedValue.Type,
+                    "returnValue",
+                    $"{descriptorName}.ParameterList[{IndexOf(function.Parameters, returnedValue.Property)}]"))
+                .AppendLine(");");
+            builder.AppendLine("            }");
+        }
+        for (var index = 0; index < postOutputs.Length; index++)
+        {
+            var parameter = postOutputs[index];
+            builder.Append("            if (!EqualityComparer<").Append(parameter.Type.Name)
+                .Append(">.Default.Equals(").Append(parameter.Name).Append(", originalOutput").Append(index).AppendLine("))");
+            builder.AppendLine("            {");
+            builder.Append("                hook.SetOutArgument(").Append(Literal(parameter.Property.Name)).Append(", ")
+                .Append(CSharpTypeTranslator.WriteHookValueExpression(
+                    parameter.Type,
+                    parameter.Name,
+                    $"{descriptorName}.ParameterList[{IndexOf(function.Parameters, parameter.Property)}]"))
+                .AppendLine(");");
+            builder.AppendLine("            }");
+        }
+        builder.AppendLine("        });");
         builder.AppendLine("    }");
     }
 

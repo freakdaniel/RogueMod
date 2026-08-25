@@ -14,7 +14,7 @@ The bridge deliberately uses a minimal header-only declaration of `CppUserModBas
 
 ## Versioned boundary
 
-The bridge ABI exposes a structure with size and version fields followed by function pointers. ABI 11 exposes the game-root package directory, single and multi-object discovery, Unreal object handles, capabilities, primitive/object/`FString`/`FName`/`FText`/POD-struct/`TArray` property reads and writes, UFunction input/return/out marshalling, and ownership-safe read-only pre/post UFunction hooks:
+The bridge ABI exposes a structure with size and version fields followed by function pointers. ABI 13 exposes the game-root package directory, single and multi-object discovery, Unreal object handles, capabilities, primitive/object/`FString`/`FName`/`FText`/POD-struct/`TArray` property reads and writes, UFunction input/return/out marshalling, and ownership-safe mutable, ordered, and exact-instance-filtered pre/post UFunction hooks:
 
     struct RogueModHostApi {
         uint32_t size;

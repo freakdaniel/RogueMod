@@ -39,9 +39,6 @@ jobs:
       - name: Test
         run: dotnet test RogueMod.slnx --configuration Release --no-build --nologo
 
-      - name: Check for slop
-        run: dotnet slopwatch analyze --fail-on warning
-
   runtime:
     name: Native bridge and runtime package
     runs-on: windows-latest

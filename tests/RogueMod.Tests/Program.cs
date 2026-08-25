@@ -7,6 +7,7 @@ using RogueMod.Sdk;
 using RogueMod.Runtime;
 using RogueMod.Tests.Fixtures;
 using RogueMod.Tests.Native;
+using System.Runtime.InteropServices;
 using Xunit;
 
 namespace RogueMod.Tests;
@@ -56,6 +57,9 @@ public sealed class RogueModTests
     public unsafe void NativeFunctionHooksDispatchAndUnregisterTest() => NativeFunctionHooksDispatchAndUnregister();
 
     [Fact]
+    public unsafe void NativeHookComplexMutationOwnershipTest() => NativeHookComplexMutationOwnership();
+
+    [Fact]
     public Task ManagedModLoadsAndUnloadsTest() => ManagedModLoadsAndUnloads().AsTask();
 
     [Fact]
@@ -92,7 +96,7 @@ public sealed class RogueModTests
         var reflection = new NativeUnrealReflection(
             &NativeBootstrapTestCallbacks.UnrealIsAvailable,
             null,
-            null,
+            &NativeBootstrapTestCallbacks.UnrealIsValid,
             null,
             null,
             &NativeBootstrapTestCallbacks.UnrealGetCapabilities,
@@ -114,25 +118,135 @@ public sealed class RogueModTests
             ]);
 
         UnrealHookContext? observed = null;
-        using (reflection.RegisterHook(function, UnrealHookPhase.Pre, context => observed = context))
+        var filteredInstance = new UnrealObjectHandle(0x0000_0007_0000_002A);
+        using (reflection.RegisterHook(
+                   function,
+                   UnrealHookPhase.Pre,
+                   new UnrealHookOptions(Priority: 42, Instance: filteredInstance),
+                   context =>
+                   {
+                       observed = context;
+                       context.SetArgument("Input", UnrealValue.From(11));
+                   }))
         {
+            Assert(NativeHookTestCallbacks.Priority == 42
+                && NativeHookTestCallbacks.InstanceFilter == filteredInstance.Value,
+                "Managed hook ordering and instance filter were not forwarded to the native ABI.");
             Assert(NativeHookTestCallbacks.Dispatch(0x0000_0007_0000_002A, 7, 0) == 0,
                 "Managed pre-hook callback rejected the native snapshot.");
             Assert(observed is { Phase: UnrealHookPhase.Pre }
                 && observed.Arguments["Input"].As<int>() == 7,
                 "Managed pre-hook did not decode its input argument.");
+            Assert(NativeHookTestCallbacks.Parameters[0].Value.Data == 11
+                && (NativeHookTestCallbacks.Parameters[0].Flags & 8U) != 0,
+                "Managed pre-hook did not encode its input replacement into the native callback buffer.");
         }
         Assert(NativeHookTestCallbacks.Callback == null,
             "Disposing a managed hook did not unregister its native token.");
 
         observed = null;
-        using (reflection.RegisterHook(function, UnrealHookPhase.Post, context => observed = context))
+        using (reflection.RegisterHook(function, UnrealHookPhase.Post, context =>
+        {
+            observed = context;
+            context.SetReturnValue(UnrealValue.From(13));
+        }))
         {
             Assert(NativeHookTestCallbacks.Dispatch(0x0000_0007_0000_002A, 7, 9) == 0,
                 "Managed post-hook callback rejected the native snapshot.");
             Assert(observed is { Phase: UnrealHookPhase.Post }
                 && observed.Result.ReturnValue.As<int>() == 9,
                 "Managed post-hook did not decode its return value.");
+            Assert(NativeHookTestCallbacks.Parameters[1].Value.Data == 13
+                && (NativeHookTestCallbacks.Parameters[1].Flags & 8U) != 0,
+                "Managed post-hook did not encode its return replacement into the native callback buffer.");
+        }
+
+    }
+
+    static unsafe void NativeHookComplexMutationOwnership()
+    {
+        var reflection = new NativeUnrealReflection(
+            &NativeBootstrapTestCallbacks.UnrealIsAvailable,
+            null,
+            null,
+            null,
+            null,
+            &NativeBootstrapTestCallbacks.UnrealGetCapabilities,
+            null,
+            null,
+            null,
+            null,
+            &NativeHookTestCallbacks.Register,
+            &NativeHookTestCallbacks.Unregister,
+            (_, _) => { });
+
+        var stringFunction = new UnrealFunctionDescriptor(
+            "/Script/Test.HookOwner",
+            "/Script/Test.HookOwner:RewriteString",
+            "RewriteString",
+            "FUNC_Public",
+            [new("Input", "StrProperty", 0, 1, "CPF_Parm", 16)]);
+        using (reflection.RegisterHook(stringFunction, UnrealHookPhase.Pre,
+                   hook => hook.SetArgument("Input", UnrealValue.From("after"))))
+        {
+            var original = Marshal.StringToCoTaskMemUni("before");
+            Assert(NativeHookTestCallbacks.DispatchNative(
+                    0x0000_0007_0000_002A,
+                    new NativeUnrealReflection.NativeUnrealValue
+                    {
+                        Kind = 13,
+                        Reserved = 6,
+                        Data = unchecked((ulong)original)
+                    }) == 0,
+                "Managed string pre-hook rejected the native snapshot.");
+            var replacement = NativeHookTestCallbacks.Parameters[0].Value;
+            Assert((NativeHookTestCallbacks.Parameters[0].Flags & 8U) != 0
+                && replacement.Reserved == 5
+                && Marshal.PtrToStringUni(unchecked((nint)replacement.Data), 5) == "after",
+                "Managed string pre-hook did not transfer replacement ownership to native code.");
+            NativeHookTestCallbacks.ReleaseTransportedValues();
+        }
+
+        var arrayDescriptor = new UnrealArrayDescriptor("IntProperty", 4);
+        var arrayFunction = new UnrealFunctionDescriptor(
+            "/Script/Test.HookOwner",
+            "/Script/Test.HookOwner:RewriteArray",
+            "RewriteArray",
+            "FUNC_Public",
+            [new("Input", "ArrayProperty", 0, 1, "CPF_Parm", 16, Array: arrayDescriptor)]);
+        using (reflection.RegisterHook(arrayFunction, UnrealHookPhase.Pre, hook =>
+               {
+                   var observed = hook.Arguments["Input"].As<UnrealArrayValue>();
+                   Assert(observed.Elements.Select(value => value.As<int>()).SequenceEqual([1, 2]),
+                       "Managed array pre-hook did not decode its native snapshot.");
+                   hook.SetArgument(
+                       "Input",
+                       UnrealArrayValue.From(arrayDescriptor, [3, 4, 5], UnrealValue.From));
+               }))
+        {
+            const uint encodedArrayKind = 17U | 6U << 8;
+            var original = Marshal.AllocCoTaskMem(2 * sizeof(NativeUnrealReflection.NativeUnrealValue));
+            var originalValues = (NativeUnrealReflection.NativeUnrealValue*)original;
+            originalValues[0] = new() { Kind = 6, Data = 1 };
+            originalValues[1] = new() { Kind = 6, Data = 2 };
+            Assert(NativeHookTestCallbacks.DispatchNative(
+                    0x0000_0007_0000_002A,
+                    new NativeUnrealReflection.NativeUnrealValue
+                    {
+                        Kind = encodedArrayKind,
+                        Reserved = 2,
+                        Data = unchecked((ulong)original)
+                    }) == 0,
+                "Managed array pre-hook rejected the native snapshot.");
+            var replacement = NativeHookTestCallbacks.Parameters[0].Value;
+            var replacementValues = (NativeUnrealReflection.NativeUnrealValue*)replacement.Data;
+            Assert((NativeHookTestCallbacks.Parameters[0].Flags & 8U) != 0
+                && replacement.Reserved == 3
+                && replacementValues[0].Data == 3
+                && replacementValues[1].Data == 4
+                && replacementValues[2].Data == 5,
+                "Managed array pre-hook did not transfer recursive replacement ownership to native code.");
+            NativeHookTestCallbacks.ReleaseTransportedValues();
         }
     }
 
@@ -500,8 +614,8 @@ public sealed class RogueModTests
     static unsafe void NativeBootstrapValidatesAbi()
     {
         using var directory = new TemporaryDirectory();
-        Assert(sizeof(NativeBootstrapTestCallbacks.HostApi) == 144, "Managed ABI 11 host table has an unexpected size.");
-        Assert(sizeof(NativeBootstrapTestCallbacks.NativeUnrealParameter) == 40, "Managed ABI 11 parameter has an unexpected size.");
+        Assert(sizeof(NativeBootstrapTestCallbacks.HostApi) == 144, "Managed ABI 13 host table has an unexpected size.");
+        Assert(sizeof(NativeBootstrapTestCallbacks.NativeUnrealParameter) == 40, "Managed ABI 13 parameter has an unexpected size.");
         NativeBootstrapTestCallbacks.Messages.Clear();
         NativeBootstrapTestCallbacks.PropertyWritten = false;
         NativeBootstrapTestCallbacks.StringPropertyWritten = false;
@@ -531,7 +645,7 @@ public sealed class RogueModTests
             var api = new NativeBootstrapTestCallbacks.HostApi
             {
                 Size = (uint)sizeof(NativeBootstrapTestCallbacks.HostApi),
-                AbiVersion = 11,
+                AbiVersion = 13,
                 Log = &NativeBootstrapTestCallbacks.CaptureLog,
                 ModRoot = modRootPointer,
                 GameProfileId = profileIdPointer,
@@ -554,7 +668,7 @@ public sealed class RogueModTests
             delegate* unmanaged[Cdecl]<nint, int> initialize = &NativeBootstrap.Initialize;
             delegate* unmanaged[Cdecl]<int, int> dispatchGameEvent = &NativeBootstrap.DispatchGameEvent;
             delegate* unmanaged[Cdecl]<int> shutdown = &NativeBootstrap.Shutdown;
-            Assert(initialize((nint)(&api)) == 0, "Native bootstrap rejected ABI version 11.");
+            Assert(initialize((nint)(&api)) == 0, "Native bootstrap rejected ABI version 13.");
             Assert(NativeBootstrapTestCallbacks.Messages.Contains("[C#:sample.mod] loaded:sample.mod"), "Installed managed mod was not loaded.");
             Assert(NativeBootstrapTestCallbacks.Messages.Contains("[C#:sample.mod] reflection:/Test/PlayerController"), "Native reflection ABI was not exposed to the managed mod.");
             Assert(NativeBootstrapTestCallbacks.Messages.Contains("[C#:sample.mod] discovery:/Test/PlayerController:1"), "Typed object discovery was not exposed to the managed mod.");
@@ -810,10 +924,16 @@ public sealed class RogueModTests
         Assert(source.Contains("public UnrealLazyObjectReference<Actor> EchoLazy(UnrealLazyObjectReference<Actor> input)", StringComparison.Ordinal), "Generated lazy UObject UFunction wrapper is missing.");
         Assert(source.Contains("public static IDisposable RegisterSetHealthPreHook", StringComparison.Ordinal),
             "Generated strongly typed pre-hook registration is missing.");
+        Assert(source.Contains("callback, UnrealHookOptions options = default", StringComparison.Ordinal),
+            "Generated hook registration did not expose ordering and instance filtering options.");
         Assert(source.Contains("public static IDisposable RegisterGetHealthPostHook", StringComparison.Ordinal),
             "Generated strongly typed post-hook registration is missing.");
-        Assert(source.Contains("public delegate void EchoNumbersPreHookHandler(BP_Player context, IReadOnlyList<int> input)", StringComparison.Ordinal),
+        Assert(source.Contains("public delegate void EchoNumbersPreHookHandler(BP_Player context, ref IReadOnlyList<int> input)", StringComparison.Ordinal),
             "Generated TArray hook callback did not use its translated argument type.");
+        Assert(source.Contains("hook.SetArgument(\"Input\", UnrealArrayValue.From", StringComparison.Ordinal),
+            "Generated TArray pre-hook did not emit container replacement transport.");
+        Assert(source.Contains("hook.SetReturnValue(UnrealArrayValue.From", StringComparison.Ordinal),
+            "Generated TArray post-hook did not emit container replacement transport.");
         Assert(source.Contains("Array: new(\"IntProperty\", 4", StringComparison.Ordinal), "Generated TArray element descriptor is missing.");
         Assert(source.Contains("ElementArray = new(\"IntProperty\", 4", StringComparison.Ordinal), "Generated nested TArray descriptor is missing.");
         Assert(source.Contains("Optional = new(\"IntProperty\", 4", StringComparison.Ordinal), "Generated TOptional value descriptor is missing.");

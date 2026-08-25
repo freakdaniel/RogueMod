@@ -30,12 +30,19 @@ internal sealed class OwnedUnrealReflection(IUnrealReflection inner) : IUnrealRe
     public IDisposable RegisterHook(
         UnrealFunctionDescriptor function,
         UnrealHookPhase phase,
+        Action<UnrealHookContext> callback) =>
+        RegisterHook(function, phase, default, callback);
+
+    public IDisposable RegisterHook(
+        UnrealFunctionDescriptor function,
+        UnrealHookPhase phase,
+        UnrealHookOptions options,
         Action<UnrealHookContext> callback)
     {
         lock (gate)
         {
             ObjectDisposedException.ThrowIf(disposed, this);
-            var tracked = new TrackedSubscription(this, inner.RegisterHook(function, phase, callback));
+            var tracked = new TrackedSubscription(this, inner.RegisterHook(function, phase, options, callback));
             subscriptions.Add(tracked);
             return tracked;
         }
