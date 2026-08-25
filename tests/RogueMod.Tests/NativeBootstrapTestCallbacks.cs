@@ -26,6 +26,22 @@ internal static unsafe class NativeBootstrapTestCallbacks
     internal static ulong UnrealFindFirstOf(char* className) => 0x0000_0007_0000_002A;
 
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    internal static int UnrealFindAllOf(char* className, ulong* handles, uint capacity, uint* required)
+    {
+        if (required == null)
+        {
+            return -2;
+        }
+        *required = 1;
+        if (handles == null || capacity < 1)
+        {
+            return 1;
+        }
+        handles[0] = 0x0000_0007_0000_002A;
+        return 0;
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     internal static int UnrealIsValid(ulong handle) => handle == 0x0000_0007_0000_002A ? 1 : 0;
 
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
@@ -53,7 +69,7 @@ internal static unsafe class NativeBootstrapTestCallbacks
     }
 
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
-    internal static uint UnrealGetCapabilities() => (1U << 0) | (1U << 1) | (1U << 2) | (1U << 3);
+    internal static uint UnrealGetCapabilities() => (1U << 0) | (1U << 1) | (1U << 2) | (1U << 3) | (1U << 4);
 
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     internal static int UnrealInvokeZeroParameter(ulong handle, char* functionName) =>
@@ -334,6 +350,7 @@ internal static unsafe class NativeBootstrapTestCallbacks
         internal delegate* unmanaged[Cdecl]<ulong, char*, uint, NativeUnrealValue*, int> UnrealWriteProperty;
         internal delegate* unmanaged[Cdecl]<ulong, char*, uint, NativeUnrealParameter*, int> UnrealInvoke;
         internal char* GameModsRoot;
+        internal delegate* unmanaged[Cdecl]<char*, ulong*, uint, uint*, int> UnrealFindAllOf;
     }
 
     internal struct NativeUnrealValue

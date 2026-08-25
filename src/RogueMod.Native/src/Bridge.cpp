@@ -133,6 +133,15 @@ namespace
         return UnrealReflection.find_first_of(class_name);
     }
 
+    std::int32_t __cdecl unreal_find_all_of(
+        const wchar_t* class_name,
+        std::uint64_t* handles,
+        std::uint32_t capacity,
+        std::uint32_t* required)
+    {
+        return UnrealReflection.find_all_of(class_name, handles, capacity, required);
+    }
+
     std::int32_t __cdecl unreal_is_valid(std::uint64_t handle)
     {
         return UnrealReflection.is_valid(handle) ? 1 : 0;
@@ -376,7 +385,8 @@ namespace
                 &unreal_read_property,
                 &unreal_write_property,
                 &unreal_invoke,
-                game_mods_root.c_str()};
+                game_mods_root.c_str(),
+                &unreal_find_all_of};
             log_bridge(1, L"Calling managed Initialize entry point.");
             result = initialize(&api);
             log_result(L"managed Initialize", result);

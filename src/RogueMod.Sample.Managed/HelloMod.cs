@@ -11,6 +11,8 @@ public sealed class HelloMod : IRogueMod, IRogueModGameEvents
     private bool _invocationLogged;
     private bool _stringSmokeLogged;
     private bool _textSmokeLogged;
+    private bool _nonEmptyArraySmokeLogged;
+    private bool _objectEnumerationLogged;
 
     public ValueTask LoadAsync(IModContext context, CancellationToken cancellationToken = default)
     {
@@ -30,6 +32,8 @@ public sealed class HelloMod : IRogueMod, IRogueModGameEvents
         _invocationLogged = false;
         _stringSmokeLogged = false;
         _textSmokeLogged = false;
+        _nonEmptyArraySmokeLogged = false;
+        _objectEnumerationLogged = false;
         return ValueTask.CompletedTask;
     }
 
@@ -51,64 +55,81 @@ public sealed class HelloMod : IRogueMod, IRogueModGameEvents
         if (eventKind == ModGameEventKind.Update && !_reflectionLogged && _unreal?.IsAvailable == true)
         {
             var playerController = _unreal.FindFirstOf("PlayerController");
-            if (!playerController.IsNull)
+            if (!playerController.IsNull && _unreal.IsValid(playerController))
             {
-                var objectPath = _unreal.GetPathName(playerController) ?? "<unknown>";
-                var classPath = _unreal.GetPathName(_unreal.GetClass(playerController)) ?? "<unknown>";
-                _logger?.Log(
-                    ModLogLevel.Information,
-                    $"Unreal reflection: PlayerController={objectPath}; Class={classPath}.");
-                _reflectionLogged = true;
-
-                if (!_invocationLogged
-                    && (_unreal.Capabilities & UnrealReflectionCapabilities.FunctionInvocation) != 0)
+                try
                 {
-                    var controller = new PlayerControllerSdk(_unreal, playerController);
-                    controller.ResetControllerLightColor();
-                    _logger?.Log(ModLogLevel.Information, "Typed UFunction call succeeded: PlayerController.ResetControllerLightColor().");
-                    controller.AddYawInput(0.0f);
-                    _logger?.Log(ModLogLevel.Information, "Typed input marshalling succeeded: PlayerController.AddYawInput(0.0f).");
-                    var canRestartPlayer = controller.CanRestartPlayer();
+                    var objectPath = _unreal.GetPathName(playerController) ?? "<unknown>";
+                    var classPath = _unreal.GetPathName(_unreal.GetClass(playerController)) ?? "<unknown>";
                     _logger?.Log(
                         ModLogLevel.Information,
-                        $"Typed return marshalling succeeded: PlayerController.CanRestartPlayer()={canRestartPlayer}.");
-                    var fullTickWhenPaused = controller.bShouldPerformFullTickWhenPaused;
-                    _logger?.Log(
-                        ModLogLevel.Information,
-                        $"Typed property read succeeded: PlayerController.bShouldPerformFullTickWhenPaused={fullTickWhenPaused}.");
-                    controller.bShouldPerformFullTickWhenPaused = fullTickWhenPaused;
-                    _logger?.Log(
-                        ModLogLevel.Information,
-                        "Typed property write succeeded: PlayerController.bShouldPerformFullTickWhenPaused was preserved.");
-                    var controllerState = controller.StateName;
-                    _logger?.Log(ModLogLevel.Information, $"FName property read succeeded: StateName={controllerState}.");
-                    var attachSocket = controller.GetAttachParentSocketName();
-                    _logger?.Log(ModLogLevel.Information, $"FName return marshalling succeeded: AttachSocket={attachSocket}.");
-                    var hasSmokeTag = controller.ActorHasTag("RogueModSmokeTest");
-                    _logger?.Log(
-                        ModLogLevel.Information,
-                        $"FName input marshalling succeeded: ActorHasTag(RogueModSmokeTest)={hasSmokeTag}.");
-                    var actorScale = controller.GetActorScale3D();
-                    _logger?.Log(
-                        ModLogLevel.Information,
-                        $"POD struct return marshalling succeeded: ActorScale3D=({actorScale.X}, {actorScale.Y}, {actorScale.Z}).");
-                    controller.SetActorScale3D(actorScale);
-                    _logger?.Log(
-                        ModLogLevel.Information,
-                        "POD struct input marshalling succeeded: ActorScale3D was preserved.");
-                    var hiddenActors = controller.HiddenActors;
-                    _logger?.Log(
-                        ModLogLevel.Information,
-                        $"TArray property read succeeded: HiddenActors.Count={hiddenActors.Count}.");
-                    controller.HiddenActors = hiddenActors;
-                    _logger?.Log(
-                        ModLogLevel.Information,
-                        "TArray property write succeeded: HiddenActors was preserved.");
-                    var childActors = controller.GetAllChildActors(includeDescendants: false);
-                    _logger?.Log(
-                        ModLogLevel.Information,
-                        $"TArray UFunction output marshalling succeeded: ChildActors.Count={childActors.Count}.");
-                    _invocationLogged = true;
+                        $"Unreal reflection: PlayerController={objectPath}; Class={classPath}.");
+                    _reflectionLogged = true;
+
+                    if (!_objectEnumerationLogged
+                        && (_unreal.Capabilities & UnrealReflectionCapabilities.ObjectEnumeration) != 0)
+                    {
+                        var controllers = _unreal.FindAll<PlayerControllerSdk>();
+                        _logger?.Log(
+                            ModLogLevel.Information,
+                            $"Typed object enumeration succeeded: PlayerController.Count={controllers.Count}.");
+                        _objectEnumerationLogged = true;
+                    }
+
+                    if (!_invocationLogged
+                        && (_unreal.Capabilities & UnrealReflectionCapabilities.FunctionInvocation) != 0)
+                    {
+                        var controller = new PlayerControllerSdk(_unreal, playerController);
+                        controller.ResetControllerLightColor();
+                        _logger?.Log(ModLogLevel.Information, "Typed UFunction call succeeded: PlayerController.ResetControllerLightColor().");
+                        controller.AddYawInput(0.0f);
+                        _logger?.Log(ModLogLevel.Information, "Typed input marshalling succeeded: PlayerController.AddYawInput(0.0f).");
+                        var canRestartPlayer = controller.CanRestartPlayer();
+                        _logger?.Log(
+                            ModLogLevel.Information,
+                            $"Typed return marshalling succeeded: PlayerController.CanRestartPlayer()={canRestartPlayer}.");
+                        var fullTickWhenPaused = controller.bShouldPerformFullTickWhenPaused;
+                        _logger?.Log(
+                            ModLogLevel.Information,
+                            $"Typed property read succeeded: PlayerController.bShouldPerformFullTickWhenPaused={fullTickWhenPaused}.");
+                        controller.bShouldPerformFullTickWhenPaused = fullTickWhenPaused;
+                        _logger?.Log(
+                            ModLogLevel.Information,
+                            "Typed property write succeeded: PlayerController.bShouldPerformFullTickWhenPaused was preserved.");
+                        var controllerState = controller.StateName;
+                        _logger?.Log(ModLogLevel.Information, $"FName property read succeeded: StateName={controllerState}.");
+                        var attachSocket = controller.GetAttachParentSocketName();
+                        _logger?.Log(ModLogLevel.Information, $"FName return marshalling succeeded: AttachSocket={attachSocket}.");
+                        var hasSmokeTag = controller.ActorHasTag("RogueModSmokeTest");
+                        _logger?.Log(
+                            ModLogLevel.Information,
+                            $"FName input marshalling succeeded: ActorHasTag(RogueModSmokeTest)={hasSmokeTag}.");
+                        var actorScale = controller.GetActorScale3D();
+                        _logger?.Log(
+                            ModLogLevel.Information,
+                            $"POD struct return marshalling succeeded: ActorScale3D=({actorScale.X}, {actorScale.Y}, {actorScale.Z}).");
+                        controller.SetActorScale3D(actorScale);
+                        _logger?.Log(
+                            ModLogLevel.Information,
+                            "POD struct input marshalling succeeded: ActorScale3D was preserved.");
+                        var hiddenActors = controller.HiddenActors;
+                        _logger?.Log(
+                            ModLogLevel.Information,
+                            $"TArray property read succeeded: HiddenActors.Count={hiddenActors.Count}.");
+                        controller.HiddenActors = hiddenActors;
+                        _logger?.Log(
+                            ModLogLevel.Information,
+                            "TArray property write succeeded: HiddenActors was preserved.");
+                        var childActors = controller.GetAllChildActors(includeDescendants: false);
+                        _logger?.Log(
+                            ModLogLevel.Information,
+                            $"TArray UFunction output marshalling succeeded: ChildActors.Count={childActors.Count}.");
+                        _invocationLogged = true;
+                    }
+                }
+                catch (InvalidOperationException) when (!_unreal.IsValid(playerController))
+                {
+                    _reflectionLogged = false;
                 }
             }
         }
@@ -119,11 +140,18 @@ public sealed class HelloMod : IRogueMod, IRogueModGameEvents
             && (_unreal.Capabilities & UnrealReflectionCapabilities.FunctionInvocation) != 0)
         {
             var playerState = _unreal.FindFirstOf("PlayerState");
-            if (!playerState.IsNull)
+            if (!playerState.IsNull && _unreal.IsValid(playerState))
             {
-                var state = new PlayerStateSdk(_unreal, playerState);
-                _logger?.Log(ModLogLevel.Information, $"FString marshalling succeeded: PlayerName={state.GetPlayerName()}.");
-                _stringSmokeLogged = true;
+                try
+                {
+                    var state = new PlayerStateSdk(_unreal, playerState);
+                    _logger?.Log(ModLogLevel.Information, $"FString marshalling succeeded: PlayerName={state.GetPlayerName()}.");
+                    _stringSmokeLogged = true;
+                }
+                catch (InvalidOperationException) when (!_unreal.IsValid(playerState))
+                {
+                    // The next Update will discover the replacement PlayerState.
+                }
             }
         }
 
@@ -134,21 +162,70 @@ public sealed class HelloMod : IRogueMod, IRogueModGameEvents
                 == (UnrealReflectionCapabilities.PropertyRead | UnrealReflectionCapabilities.PropertyWrite))
         {
             var textBlock = _unreal.FindFirstOf("TextBlock");
-            if (!textBlock.IsNull)
+            if (!textBlock.IsNull && _unreal.IsValid(textBlock))
             {
-                var block = new TextBlockSdk(_unreal, textBlock);
-                var text = block.Text;
-                _logger?.Log(ModLogLevel.Information, $"FText property read succeeded: Text={text}.");
-                block.Text = text;
-                _logger?.Log(ModLogLevel.Information, "FText property write succeeded: Text was preserved.");
-                _textSmokeLogged = true;
+                try
+                {
+                    var block = new TextBlockSdk(_unreal, textBlock);
+                    var text = block.Text;
+                    _logger?.Log(ModLogLevel.Information, $"FText property read succeeded: Text={text}.");
+                    block.Text = text;
+                    _logger?.Log(ModLogLevel.Information, "FText property write succeeded: Text was preserved.");
+                    _textSmokeLogged = true;
+                }
+                catch (InvalidOperationException) when (!_unreal.IsValid(textBlock))
+                {
+                    // The next Update will discover a live widget instance.
+                }
+            }
+        }
+
+        if (eventKind == ModGameEventKind.Update
+            && !_nonEmptyArraySmokeLogged
+            && _unreal?.IsAvailable == true
+            && (_unreal.Capabilities & (UnrealReflectionCapabilities.FunctionInvocation
+                                        | UnrealReflectionCapabilities.PropertyRead
+                                        | UnrealReflectionCapabilities.PropertyWrite))
+                == (UnrealReflectionCapabilities.FunctionInvocation
+                    | UnrealReflectionCapabilities.PropertyRead
+                    | UnrealReflectionCapabilities.PropertyWrite))
+        {
+            var panelWidget = _unreal.FindFirstOf("PanelWidget");
+            if (!panelWidget.IsNull && _unreal.IsValid(panelWidget))
+            {
+                try
+                {
+                    var panel = new PanelWidgetSdk(_unreal, panelWidget);
+                    var slots = panel.Slots;
+                    if (slots.Count > 0)
+                    {
+                        _logger?.Log(
+                            ModLogLevel.Information,
+                            $"Non-empty TArray property read succeeded: PanelWidget.Slots.Count={slots.Count}.");
+                        var children = panel.GetAllChildren();
+                        _logger?.Log(
+                            ModLogLevel.Information,
+                            $"Non-empty TArray return marshalling succeeded: PanelWidget.GetAllChildren().Count={children.Count}.");
+                        _nonEmptyArraySmokeLogged = children.Count > 0;
+                    }
+                }
+                catch (InvalidOperationException) when (!_unreal.IsValid(panelWidget))
+                {
+                    // Retry after the widget tree finishes rebuilding.
+                }
             }
         }
     }
 
     private sealed class PlayerControllerSdk(IUnrealReflection unreal, UnrealObjectHandle handle)
-        : UnrealObject(unreal, handle)
+        : UnrealObject(unreal, handle), IUnrealObjectType<PlayerControllerSdk>
     {
+        static string IUnrealObjectType<PlayerControllerSdk>.UnrealClassName => "PlayerController";
+
+        static PlayerControllerSdk IUnrealObjectType<PlayerControllerSdk>.Create(
+            IUnrealReflection unreal,
+            UnrealObjectHandle handle) => new(unreal, handle);
+
         private static readonly UnrealFunctionDescriptor ResetControllerLightColorFunction = new(
             "/Script/Engine.PlayerController",
             "/Script/Engine.PlayerController:ResetControllerLightColor",
@@ -384,6 +461,49 @@ public sealed class HelloMod : IRogueMod, IRogueModGameEvents
             get => Read<string>(TextProperty);
             set => Write(TextProperty, value);
         }
+    }
+
+    private sealed class PanelWidgetSdk(IUnrealReflection unreal, UnrealObjectHandle handle)
+        : UnrealObject(unreal, handle)
+    {
+        private static readonly UnrealArrayDescriptor PanelSlotArrayDescriptor =
+            new("ObjectProperty:/Script/UMG.PanelSlot", 8);
+        private static readonly UnrealArrayDescriptor WidgetArrayDescriptor =
+            new("ObjectProperty:/Script/UMG.Widget", 8);
+        private static readonly UnrealPropertyDescriptor SlotsProperty = new(
+            "/Script/UMG.PanelWidget",
+            "Slots",
+            "ArrayProperty",
+            360,
+            1,
+            "CPF_ExportObject | CPF_ZeroConstructor | CPF_ContainsInstancedReference | CPF_Protected | CPF_UObjectWrapper | CPF_NativeAccessSpecifierProtected | CPF_TObjectPtr",
+            16,
+            Array: PanelSlotArrayDescriptor);
+        private static readonly UnrealFunctionDescriptor GetAllChildrenFunction = new(
+            "/Script/UMG.PanelWidget",
+            "/Script/UMG.PanelWidget:GetAllChildren",
+            "GetAllChildren",
+            "FUNC_Final | FUNC_RequiredAPI | FUNC_Native | FUNC_Public | FUNC_BlueprintCallable | FUNC_BlueprintPure | FUNC_Const",
+            [new(
+                "ReturnValue",
+                "ArrayProperty",
+                0,
+                1,
+                "CPF_ExportObject | CPF_Parm | CPF_OutParm | CPF_ZeroConstructor | CPF_ReturnParm | CPF_ContainsInstancedReference | CPF_NativeAccessSpecifierPublic",
+                16,
+                Array: WidgetArrayDescriptor)]);
+
+        public IReadOnlyList<UnrealObjectHandle> Slots
+        {
+            get => UnrealArrayValue.ToList<UnrealObjectHandle>(
+                ReadValue(SlotsProperty),
+                value => value.AsObjectHandle());
+        }
+
+        public IReadOnlyList<UnrealObjectHandle> GetAllChildren() =>
+            UnrealArrayValue.ToList<UnrealObjectHandle>(
+                Call(GetAllChildrenFunction).ReturnValue,
+                value => value.AsObjectHandle());
     }
 
     private sealed class PlayerStateSdk(IUnrealReflection unreal, UnrealObjectHandle handle)

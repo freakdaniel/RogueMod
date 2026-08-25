@@ -46,6 +46,9 @@ public interface IUnrealReflection
 
     UnrealObjectHandle FindFirstOf(string className);
 
+    IReadOnlyList<UnrealObjectHandle> FindAllOf(string className) =>
+        throw new NotSupportedException("The active RogueMod bridge does not support Unreal object enumeration.");
+
     bool IsValid(UnrealObjectHandle handle);
 
     UnrealObjectHandle GetClass(UnrealObjectHandle handle);
@@ -72,7 +75,8 @@ public enum UnrealReflectionCapabilities
     Objects = 1 << 0,
     PropertyRead = 1 << 1,
     PropertyWrite = 1 << 2,
-    FunctionInvocation = 1 << 3
+    FunctionInvocation = 1 << 3,
+    ObjectEnumeration = 1 << 4
 }
 
 public readonly record struct UnrealObjectHandle(ulong Value)
@@ -308,6 +312,36 @@ public class UnrealObject
     protected UnrealInvocationResult Call(
         UnrealFunctionDescriptor function,
         params UnrealArgument[] arguments) => Unreal.Invoke(Handle, function, arguments);
+}
+
+/// <summary>Static construction contract implemented by generated Unreal object wrappers.</summary>
+public interface IUnrealObjectType<TSelf> where TSelf : UnrealObject
+{
+    static abstract string UnrealClassName { get; }
+
+    static abstract TSelf Create(IUnrealReflection unreal, UnrealObjectHandle handle);
+}
+
+/// <summary>Type-safe object discovery for wrappers emitted by the RogueMod SDK generator.</summary>
+public static class UnrealObjectDiscoveryExtensions
+{
+    public static T? FindFirst<T>(this IUnrealReflection unreal)
+        where T : UnrealObject, IUnrealObjectType<T>
+    {
+        ArgumentNullException.ThrowIfNull(unreal);
+        var handle = unreal.FindFirstOf(T.UnrealClassName);
+        return handle.IsNull || !unreal.IsValid(handle) ? null : T.Create(unreal, handle);
+    }
+
+    public static IReadOnlyList<T> FindAll<T>(this IUnrealReflection unreal)
+        where T : UnrealObject, IUnrealObjectType<T>
+    {
+        ArgumentNullException.ThrowIfNull(unreal);
+        return unreal.FindAllOf(T.UnrealClassName)
+            .Where(handle => !handle.IsNull && unreal.IsValid(handle))
+            .Select(handle => T.Create(unreal, handle))
+            .ToArray();
+    }
 }
 
 public interface IModLogger

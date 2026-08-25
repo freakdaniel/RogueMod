@@ -157,13 +157,34 @@ internal static class RogueModCli
             }
         }
 
+        var abstractionsProject = ReadOption(args, "--abstractions-project")
+            ?? FindRepositoryFile("src/RogueMod.Abstractions/RogueMod.Abstractions.csproj");
         var model = new JMapImporter().Import(jmap);
-        var result = new CSharpSdkGenerator().Generate(model, output, rootNamespace);
+        var result = new CSharpSdkGenerator().Generate(model, output, rootNamespace, abstractionsProject);
         Console.WriteLine($"Generated C# SDK from: {Path.GetFullPath(jmap)}");
         Console.WriteLine($"Types: {result.TypeCount}");
         Console.WriteLine($"Source: {result.SourcePath}");
         Console.WriteLine($"Manifest: {result.ManifestPath}");
+        Console.WriteLine($"Project: {result.ProjectPath}");
         return 0;
+    }
+
+    private static string? FindRepositoryFile(string relativePath)
+    {
+        foreach (var start in new[] { Environment.CurrentDirectory, AppContext.BaseDirectory })
+        {
+            var directory = new DirectoryInfo(start);
+            while (directory is not null)
+            {
+                var candidate = Path.Combine(directory.FullName, relativePath);
+                if (File.Exists(candidate))
+                {
+                    return candidate;
+                }
+                directory = directory.Parent;
+            }
+        }
+        return null;
     }
 
     private static string? ReadOption(string[] args, string name)
@@ -199,6 +220,6 @@ internal static class RogueModCli
         Console.WriteLine("  roguemod install-runtime --game <directory> --package <directory> [--replace] [--profile <profile.json>]");
         Console.WriteLine("  roguemod install-managed --game <directory> --package <directory> [--replace] [--profile <profile.json>]");
         Console.WriteLine("  roguemod install-native --game <directory> --package <directory> [--replace] [--profile <profile.json>]");
-        Console.WriteLine("  roguemod generate-sdk (--jmap <file> | --game <directory>) --output <directory> [--namespace <name>] [--profile <profile.json>]");
+        Console.WriteLine("  roguemod generate-sdk (--jmap <file> | --game <directory>) --output <directory> [--namespace <name>] [--abstractions-project <file>] [--profile <profile.json>]");
     }
 }

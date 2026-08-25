@@ -240,8 +240,8 @@ static void NativePackageInstallsAndActivatesTransactionally()
 static unsafe void NativeBootstrapValidatesAbi()
 {
     using var directory = new TemporaryDirectory();
-    Assert(sizeof(NativeBootstrapTestCallbacks.HostApi) == 120, "Managed ABI 9 host table has an unexpected size.");
-    Assert(sizeof(NativeBootstrapTestCallbacks.NativeUnrealParameter) == 40, "Managed ABI 9 parameter has an unexpected size.");
+    Assert(sizeof(NativeBootstrapTestCallbacks.HostApi) == 128, "Managed ABI 10 host table has an unexpected size.");
+    Assert(sizeof(NativeBootstrapTestCallbacks.NativeUnrealParameter) == 40, "Managed ABI 10 parameter has an unexpected size.");
     NativeBootstrapTestCallbacks.Messages.Clear();
     NativeBootstrapTestCallbacks.PropertyWritten = false;
     NativeBootstrapTestCallbacks.StringPropertyWritten = false;
@@ -265,7 +265,7 @@ static unsafe void NativeBootstrapValidatesAbi()
         var api = new NativeBootstrapTestCallbacks.HostApi
         {
             Size = (uint)sizeof(NativeBootstrapTestCallbacks.HostApi),
-            AbiVersion = 9,
+            AbiVersion = 10,
             Log = &NativeBootstrapTestCallbacks.CaptureLog,
             ModRoot = modRootPointer,
             GameProfileId = profileIdPointer,
@@ -279,15 +279,17 @@ static unsafe void NativeBootstrapValidatesAbi()
             UnrealReadProperty = &NativeBootstrapTestCallbacks.UnrealReadProperty,
             UnrealWriteProperty = &NativeBootstrapTestCallbacks.UnrealWriteProperty,
             UnrealInvoke = &NativeBootstrapTestCallbacks.UnrealInvoke,
-            GameModsRoot = modsRootPointer
+            GameModsRoot = modsRootPointer,
+            UnrealFindAllOf = &NativeBootstrapTestCallbacks.UnrealFindAllOf
         };
 
         delegate* unmanaged[Cdecl]<nint, int> initialize = &NativeBootstrap.Initialize;
         delegate* unmanaged[Cdecl]<int, int> dispatchGameEvent = &NativeBootstrap.DispatchGameEvent;
         delegate* unmanaged[Cdecl]<int> shutdown = &NativeBootstrap.Shutdown;
-        Assert(initialize((nint)(&api)) == 0, "Native bootstrap rejected ABI version 9.");
+        Assert(initialize((nint)(&api)) == 0, "Native bootstrap rejected ABI version 10.");
         Assert(NativeBootstrapTestCallbacks.Messages.Contains("[C#:sample.mod] loaded:sample.mod"), "Installed managed mod was not loaded.");
         Assert(NativeBootstrapTestCallbacks.Messages.Contains("[C#:sample.mod] reflection:/Test/PlayerController"), "Native reflection ABI was not exposed to the managed mod.");
+        Assert(NativeBootstrapTestCallbacks.Messages.Contains("[C#:sample.mod] discovery:/Test/PlayerController:1"), "Typed object discovery was not exposed to the managed mod.");
         Assert(NativeBootstrapTestCallbacks.Messages.Contains("[C#:sample.mod] invoked:Pause"), "Generated-style zero-parameter UFunction wrapper was not invoked.");
         Assert(NativeBootstrapTestCallbacks.Messages.Contains("[C#:sample.mod] marshalled:True:42"), "UFunction input/return/out values were not marshalled.");
         Assert(NativeBootstrapTestCallbacks.Messages.Contains("[C#:sample.mod] strings:ReturnName:Output String"), "FString/FName input, return, and out values were not marshalled.");
@@ -446,9 +448,12 @@ static void JMapImportsAndGeneratesTypedSdk()
     Assert(player.Functions.Count == 7, "UFunctions were not attached to their class.");
 
     var output = Path.Combine(directory.Path, "sdk");
-    var result = new CSharpSdkGenerator().Generate(model, output, "DeadzoneRogue.Sdk");
+    var abstractionsProject = FindRepositoryFile("src/RogueMod.Abstractions/RogueMod.Abstractions.csproj");
+    var result = new CSharpSdkGenerator().Generate(model, output, "DeadzoneRogue.Sdk", abstractionsProject);
     var source = File.ReadAllText(result.SourcePath);
     Assert(source.Contains("public class BP_Player : Actor", StringComparison.Ordinal), "Generated class inheritance is missing.");
+    Assert(source.Contains("IUnrealObjectType<BP_Player>", StringComparison.Ordinal), "Generated typed object construction contract is missing.");
+    Assert(source.Contains("public new static IReadOnlyList<BP_Player> FindAll", StringComparison.Ordinal), "Generated typed FindAll wrapper is missing.");
     Assert(source.Contains("public float Health", StringComparison.Ordinal), "Generated typed property is missing.");
     Assert(source.Contains("public Actor? Target", StringComparison.Ordinal), "Generated object wrapper property is missing.");
     Assert(source.Contains("public string PlayerName", StringComparison.Ordinal), "Generated FString property is missing.");
@@ -468,27 +473,12 @@ static void JMapImportsAndGeneratesTypedSdk()
     Assert(source.Contains("new(\"NewHealth\", \"FloatProperty\", 0, 1, \"CPF_Parm\", 4", StringComparison.Ordinal),
         "Generated UFunction runtime layout metadata is missing.");
     Assert(File.Exists(result.ManifestPath), "SDK manifest was not generated.");
+    Assert(File.Exists(result.ProjectPath), "Buildable SDK project was not generated.");
 
-    var abstractionsProject = FindRepositoryFile("src/RogueMod.Abstractions/RogueMod.Abstractions.csproj");
-    var escapedProjectPath = System.Security.SecurityElement.Escape(abstractionsProject);
-    var generatedProject = Path.Combine(output, "GeneratedSdk.csproj");
-    File.WriteAllText(generatedProject, $$"""
-        <Project Sdk="Microsoft.NET.Sdk">
-          <PropertyGroup>
-            <TargetFramework>net10.0</TargetFramework>
-            <Nullable>enable</Nullable>
-            <ImplicitUsings>enable</ImplicitUsings>
-            <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
-          </PropertyGroup>
-          <ItemGroup>
-            <ProjectReference Include="{{escapedProjectPath}}" />
-          </ItemGroup>
-        </Project>
-        """);
     var build = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
     {
         FileName = "dotnet",
-        Arguments = $"build \"{generatedProject}\" -c Release --nologo",
+        Arguments = $"build \"{result.ProjectPath}\" -c Release --nologo",
         WorkingDirectory = output,
         RedirectStandardOutput = true,
         RedirectStandardError = true,

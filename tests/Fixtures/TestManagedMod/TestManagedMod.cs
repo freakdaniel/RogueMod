@@ -14,6 +14,9 @@ public sealed class TestManagedMod : IRogueMod, IRogueModGameEvents
         {
             var instance = context.Unreal.FindFirstOf("PlayerController");
             _logger.Log(ModLogLevel.Information, $"reflection:{context.Unreal.GetPathName(instance)}");
+            var typedInstance = context.Unreal.FindFirst<TestPlayerController>();
+            var typedInstances = context.Unreal.FindAll<TestPlayerController>();
+            _logger.Log(ModLogLevel.Information, $"discovery:{typedInstance?.PathName}:{typedInstances.Count}");
             if ((context.Unreal.Capabilities & UnrealReflectionCapabilities.FunctionInvocation) != 0)
             {
                 var playerController = new TestPlayerController(context.Unreal, instance);
@@ -60,8 +63,14 @@ public sealed class TestManagedMod : IRogueMod, IRogueModGameEvents
         _logger?.Log(ModLogLevel.Information, $"event:{eventKind}");
 
     private sealed class TestPlayerController(IUnrealReflection unreal, UnrealObjectHandle handle)
-        : UnrealObject(unreal, handle)
+        : UnrealObject(unreal, handle), IUnrealObjectType<TestPlayerController>
     {
+        static string IUnrealObjectType<TestPlayerController>.UnrealClassName => "PlayerController";
+
+        static TestPlayerController IUnrealObjectType<TestPlayerController>.Create(
+            IUnrealReflection unreal,
+            UnrealObjectHandle handle) => new(unreal, handle);
+
         private static readonly UnrealFunctionDescriptor PauseFunction =
             new("/Script/Engine.PlayerController", "/Script/Engine.PlayerController:Pause", "Pause", "FUNC_Native | FUNC_Public");
         private static readonly UnrealPropertyDescriptor FullTickWhenPausedProperty =

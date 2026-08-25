@@ -13,12 +13,14 @@ internal sealed unsafe class NativeUnrealReflection(
     delegate* unmanaged[Cdecl]<uint> getCapabilities,
     delegate* unmanaged[Cdecl]<ulong, char*, uint, NativeUnrealReflection.NativeUnrealValue*, int> readProperty,
     delegate* unmanaged[Cdecl]<ulong, char*, uint, NativeUnrealReflection.NativeUnrealValue*, int> writeProperty,
-    delegate* unmanaged[Cdecl]<ulong, char*, uint, NativeUnrealReflection.NativeUnrealParameter*, int> invokeFunction) : IUnrealReflection
+    delegate* unmanaged[Cdecl]<ulong, char*, uint, NativeUnrealReflection.NativeUnrealParameter*, int> invokeFunction,
+    delegate* unmanaged[Cdecl]<char*, ulong*, uint, uint*, int> findAllOf) : IUnrealReflection
 {
     private const uint MaximumPathLength = 1_048_576;
     private const uint MaximumStringLength = 1_048_576;
     private const int MaximumStructSize = 1_048_576;
     private const uint MaximumArrayLength = 1_048_576;
+    private const uint MaximumObjectCount = 1_048_576;
     private const uint PropertyKindMask = 0xff;
     private const int ArrayElementKindShift = 8;
 
@@ -41,6 +43,52 @@ internal sealed unsafe class NativeUnrealReflection(
         {
             return new(findFirstOf(classNamePointer));
         }
+    }
+
+    public IReadOnlyList<UnrealObjectHandle> FindAllOf(string className)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(className);
+        if ((Capabilities & UnrealReflectionCapabilities.ObjectEnumeration) == 0 || findAllOf == null)
+        {
+            throw new NotSupportedException("The active RogueMod bridge does not support Unreal object enumeration.");
+        }
+
+        fixed (char* classNamePointer = className)
+        {
+            uint required = 0;
+            var result = findAllOf(classNamePointer, null, 0, &required);
+            if (result < 0 || required > MaximumObjectCount)
+            {
+                throw new InvalidOperationException($"Unreal object enumeration failed with native status {result}.");
+            }
+            if (required == 0)
+            {
+                return [];
+            }
+
+            for (var attempt = 0; attempt < 3; attempt++)
+            {
+                var handles = new ulong[required];
+                fixed (ulong* handlePointer = handles)
+                {
+                    result = findAllOf(classNamePointer, handlePointer, (uint)handles.Length, &required);
+                }
+                if (result == 0)
+                {
+                    if (required < handles.Length)
+                    {
+                        Array.Resize(ref handles, checked((int)required));
+                    }
+                    return handles.Select(value => new UnrealObjectHandle(value)).ToArray();
+                }
+                if (result < 0 || required > MaximumObjectCount)
+                {
+                    throw new InvalidOperationException($"Unreal object enumeration failed with native status {result}.");
+                }
+            }
+        }
+
+        throw new InvalidOperationException("Unreal object enumeration changed repeatedly while results were being copied.");
     }
 
     public bool IsValid(UnrealObjectHandle handle) =>
@@ -111,7 +159,7 @@ internal sealed unsafe class NativeUnrealReflection(
             if (descriptor.ArrayDimension != 1)
             {
                 throw new NotSupportedException(
-                    $"UFunction parameter '{function.Path}:{descriptor.Name}' is a fixed native array; ABI 9 supports scalar parameters and dynamic TArray values only.");
+                    $"UFunction parameter '{function.Path}:{descriptor.Name}' is a fixed native array; ABI 10 supports scalar parameters and dynamic TArray values only.");
             }
             var kind = GetPropertyKind(descriptor.UnrealType, descriptor.Size);
             var encodedKind = EncodePropertyKind(kind, descriptor.Array);
@@ -419,7 +467,7 @@ internal sealed unsafe class NativeUnrealReflection(
             "EnumProperty" when size == 8 => NativePropertyKind.UInt64,
             "StructProperty" when size > 0 => NativePropertyKind.Struct,
             "ArrayProperty" when size == 16 => NativePropertyKind.Array,
-            _ => throw new NotSupportedException($"Property type '{unrealType}' is not supported by RogueMod ABI 9.")
+            _ => throw new NotSupportedException($"Property type '{unrealType}' is not supported by RogueMod ABI 10.")
         };
     }
 
@@ -433,7 +481,7 @@ internal sealed unsafe class NativeUnrealReflection(
         var elementKind = GetPropertyKind(descriptor.ElementUnrealType, descriptor.ElementSize);
         if (elementKind == NativePropertyKind.Array)
         {
-            throw new NotSupportedException("Nested TArray values are not supported by RogueMod ABI 9.");
+            throw new NotSupportedException("Nested TArray values are not supported by RogueMod ABI 10.");
         }
         return (uint)kind | (uint)elementKind << ArrayElementKindShift;
     }
@@ -557,7 +605,7 @@ internal sealed unsafe class NativeUnrealReflection(
         var kind = GetPropertyKind(descriptor.ElementUnrealType, descriptor.ElementSize);
         if (kind == NativePropertyKind.Array)
         {
-            throw new NotSupportedException("Nested TArray values are not supported by RogueMod ABI 9.");
+            throw new NotSupportedException("Nested TArray values are not supported by RogueMod ABI 10.");
         }
         if (kind == NativePropertyKind.Boolean
             && (descriptor.ElementByteOffset < 0

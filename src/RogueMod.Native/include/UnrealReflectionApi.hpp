@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include <Windows.h>
 
@@ -19,6 +20,11 @@ namespace RogueMod
 
         [[nodiscard]] bool is_available() const;
         [[nodiscard]] std::uint64_t find_first_of(const wchar_t* class_name) const;
+        [[nodiscard]] std::int32_t find_all_of(
+            const wchar_t* class_name,
+            std::uint64_t* handles,
+            std::uint32_t capacity,
+            std::uint32_t* required) const;
         [[nodiscard]] bool is_valid(std::uint64_t handle) const;
         [[nodiscard]] std::uint64_t get_class(std::uint64_t handle) const;
         [[nodiscard]] std::int32_t get_path_name(
@@ -48,6 +54,7 @@ namespace RogueMod
 
       private:
         using find_first_of_fn = void*(__cdecl*)(const wchar_t*);
+        using find_all_of_fn = void(__cdecl*)(const wchar_t*, std::vector<void*>&);
         using get_internal_index_fn = std::int32_t(__cdecl*)(const void*);
         using index_to_object_fn = void*(__cdecl*)(std::int32_t);
         using get_serial_number_fn = const std::int32_t*(__cdecl*)(const void*);
@@ -86,11 +93,8 @@ namespace RogueMod
         using get_first_property_fn = void*(__cdecl*)(void*);
         using get_next_field_as_property_fn = void*(__cdecl*)(void*);
         using get_array_inner_fn = void**(__cdecl*)(void*);
-        using get_min_alignment_fn = std::int32_t(__cdecl*)(const void*);
-        using initialize_value_fn = void(__cdecl*)(const void*, void*);
-        using destroy_value_fn = void(__cdecl*)(const void*, void*);
-        using copy_complete_value_fn = void(__cdecl*)(const void*, void*, const void*);
         using fmemory_malloc_fn = void*(__cdecl*)(std::size_t, std::uint32_t);
+        using fmemory_free_fn = void(__cdecl*)(void*);
 
         [[nodiscard]] std::uint64_t make_handle(const void* object) const;
         [[nodiscard]] const void* resolve_handle(std::uint64_t handle) const;
@@ -104,10 +108,12 @@ namespace RogueMod
             void* address,
             std::uint32_t encoded_kind,
             const UnrealValue& value) const;
+        void destroy_array_value(void* property, void* address, std::uint32_t encoded_kind) const;
 
         std::atomic_bool m_ready{};
         bool m_resolved{};
         find_first_of_fn m_find_first_of{};
+        find_all_of_fn m_find_all_of{};
         get_internal_index_fn m_get_internal_index{};
         index_to_object_fn m_index_to_object{};
         get_serial_number_fn m_get_serial_number{};
@@ -143,10 +149,7 @@ namespace RogueMod
         get_first_property_fn m_get_first_property{};
         get_next_field_as_property_fn m_get_next_field_as_property{};
         get_array_inner_fn m_get_array_inner{};
-        get_min_alignment_fn m_get_min_alignment{};
-        initialize_value_fn m_initialize_value{};
-        destroy_value_fn m_destroy_value{};
-        copy_complete_value_fn m_copy_complete_value{};
         fmemory_malloc_fn m_fmemory_malloc{};
+        fmemory_free_fn m_fmemory_free{};
     };
 }

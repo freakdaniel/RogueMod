@@ -6,7 +6,7 @@ RogueMod is a C#-first mod loader and manager for Deadzone: Rogue, built on RE-U
 
 Deadzone: Rogue 1.4.2.0 / Unreal Engine 5.6.1 is confirmed working through Proton with the game-specific `VTableLayout.ini`. UE4SS loads the native sample and the small `RogueModBridge`; the bridge starts a private Windows CoreCLR 10.0.10 and the managed runtime loads each C# mod in its own collectible `AssemblyLoadContext`.
 
-The reflection path has been tested in the main menu with real `PlayerController` instances. ABI 5 added zero-parameter calls, scalar input and return marshalling, and primitive property reads and writes. ABI 6 moved the shared package source to `<GameRoot>/Mods`. ABI 7 added allocator-safe `FString` and `FName` marshalling. ABI 8 added field-wise POD script structs and typed generated adapters; both are confirmed in game. ABI 9 adds `FText` and one-dimensional `TArray` marshalling and is covered by managed integration tests, full generated-SDK compilation, and the Windows cross-build; its in-game smoke test is pending.
+The reflection path has been tested in the main menu with real `PlayerController` and UMG instances. ABI 5 added zero-parameter calls, scalar input and return marshalling, and primitive property reads and writes. ABI 6 moved the shared package source to `<GameRoot>/Mods`. ABI 7 added allocator-safe `FString` and `FName` marshalling. ABI 8 added field-wise POD script structs and typed generated adapters. ABI 9 added `FText` and one-dimensional `TArray` marshalling. ABI 10 adds safe multi-object discovery through UE4SS `FindAllOf` and generated `FindFirst<T>`/`FindAll<T>` wrappers.
 
 ## Repository layout
 
@@ -113,7 +113,17 @@ dotnet run --project src/RogueMod.Cli -c Release -- generate-sdk \
   --namespace "DeadzoneRogue.Sdk"
 ```
 
-The CLI imports the newest UE4SS `.jmap` dump unless `--jmap <file>` is supplied explicitly. It emits `RogueMod.GameSdk.g.cs` and a source manifest containing the dump SHA-256. See [Generated SDK](docs/generated-sdk.md).
+The CLI imports the newest UE4SS `.jmap` dump unless `--jmap <file>` is supplied explicitly. It emits `RogueMod.GameSdk.g.cs`, a source manifest containing the dump SHA-256, and a buildable/packable `DeadzoneRogue.Sdk.csproj`. Generated game code remains an ignored artifact; the generator and authoring APIs remain centralized in `src/RogueMod.Sdk`.
+
+```bash
+dotnet build .artifacts/sdk/deadzone-rogue/DeadzoneRogue.Sdk.csproj -c Release
+dotnet pack src/RogueMod.Abstractions/RogueMod.Abstractions.csproj \
+  -c Release --no-build -o .artifacts/sdk/packages
+dotnet pack .artifacts/sdk/deadzone-rogue/DeadzoneRogue.Sdk.csproj \
+  -c Release --no-build -o .artifacts/sdk/packages
+```
+
+See [Generated SDK](docs/generated-sdk.md).
 
 ## Diagnostics
 

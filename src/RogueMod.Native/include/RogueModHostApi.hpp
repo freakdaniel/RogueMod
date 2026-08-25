@@ -4,7 +4,7 @@
 
 namespace RogueMod
 {
-    inline constexpr std::uint32_t HostAbiVersion = 9;
+    inline constexpr std::uint32_t HostAbiVersion = 10;
 
     enum class LogLevel : std::int32_t
     {
@@ -103,7 +103,12 @@ namespace RogueMod
             std::uint32_t parameter_count,
             UnrealParameter* parameters);
         const wchar_t* game_mods_root;
+        std::int32_t(__cdecl* unreal_find_all_of)(
+            const wchar_t* class_name,
+            std::uint64_t* handles,
+            std::uint32_t capacity,
+            std::uint32_t* required);
     };
 
-    static_assert(sizeof(HostApi) == 120, "RogueMod host ABI changed unexpectedly.");
+    static_assert(sizeof(HostApi) == 128, "RogueMod host ABI changed unexpectedly.");
 }

@@ -5,6 +5,7 @@
 #include <cwchar>
 #include <cstring>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -158,33 +159,18 @@ namespace RogueMod
             std::vector<UnrealValue*> m_values;
         };
 
-        class PropertyValueCleanup
+        template <typename Function>
+        class ScopeExit
         {
           public:
-            explicit PropertyValueCleanup(void(__cdecl* destroy)(const void*, void*)) : m_destroy(destroy) {}
+            explicit ScopeExit(Function function) : m_function(std::move(function)) {}
+            ~ScopeExit() { m_function(); }
 
-            void add(const void* property, void* address)
-            {
-                m_values.emplace_back(property, address);
-            }
-
-            ~PropertyValueCleanup()
-            {
-                for (auto iterator = m_values.rbegin(); iterator != m_values.rend(); ++iterator)
-                {
-                    try
-                    {
-                        m_destroy(iterator->first, iterator->second);
-                    }
-                    catch (...)
-                    {
-                    }
-                }
-            }
+            ScopeExit(const ScopeExit&) = delete;
+            ScopeExit& operator=(const ScopeExit&) = delete;
 
           private:
-            void(__cdecl* m_destroy)(const void*, void*);
-            std::vector<std::pair<const void*, void*>> m_values;
+            Function m_function;
         };
 
         template <typename Function>
@@ -279,6 +265,9 @@ namespace RogueMod
         m_find_first_of = load_export<find_first_of_fn>(
             ue4ss_module,
             "?FindFirstOf@UObjectGlobals@Unreal@RC@@YAPEAVUObject@23@PEB_W@Z");
+        m_find_all_of = load_export<find_all_of_fn>(
+            ue4ss_module,
+            "?FindAllOf@UObjectGlobals@Unreal@RC@@YAXPEB_WAEAV?$vector@PEAVUObject@Unreal@RC@@V?$allocator@PEAVUObject@Unreal@RC@@@std@@@std@@@Z");
         m_get_internal_index = load_export<get_internal_index_fn>(
             ue4ss_module,
             "?GetInternalIndex@UObjectBase@Unreal@RC@@QEBA?BHXZ");
@@ -384,21 +373,12 @@ namespace RogueMod
         m_get_array_inner = load_export<get_array_inner_fn>(
             ue4ss_module,
             "?GetInner@FArrayProperty@Unreal@RC@@QEAAAEAPEAVFProperty@23@XZ");
-        m_get_min_alignment = load_export<get_min_alignment_fn>(
-            ue4ss_module,
-            "?GetMinAlignment@FProperty@Unreal@RC@@QEBAHXZ");
-        m_initialize_value = load_export<initialize_value_fn>(
-            ue4ss_module,
-            "?InitializeValue@FProperty@Unreal@RC@@QEBAXPEAX@Z");
-        m_destroy_value = load_export<destroy_value_fn>(
-            ue4ss_module,
-            "?DestroyValue@FProperty@Unreal@RC@@QEBAXPEAX@Z");
-        m_copy_complete_value = load_export<copy_complete_value_fn>(
-            ue4ss_module,
-            "?CopyCompleteValue@FProperty@Unreal@RC@@QEBAXPEAXPEBX@Z");
         m_fmemory_malloc = load_export<fmemory_malloc_fn>(
             ue4ss_module,
             "?Malloc@FMemory@Unreal@RC@@SAPEAX_KI@Z");
+        m_fmemory_free = load_export<fmemory_free_fn>(
+            ue4ss_module,
+            "?Free@FMemory@Unreal@RC@@SAXPEAX@Z");
 
         m_resolved = m_find_first_of != nullptr
             && m_get_internal_index != nullptr
@@ -436,18 +416,18 @@ namespace RogueMod
             && m_get_first_property != nullptr
             && m_get_next_field_as_property != nullptr
             && m_get_array_inner != nullptr
-            && m_get_min_alignment != nullptr
-            && m_initialize_value != nullptr
-            && m_destroy_value != nullptr
-            && m_copy_complete_value != nullptr
-            && m_fmemory_malloc != nullptr;
+            && m_fmemory_malloc != nullptr
+            && m_fmemory_free != nullptr;
         return m_resolved;
     }
 
     std::uint32_t UnrealReflectionApi::capabilities() const
     {
         // Mirrors RogueMod.Abstractions.UnrealReflectionCapabilities.
-        return is_available() ? (1U << 0) | (1U << 1) | (1U << 2) | (1U << 3) : 0U;
+        return is_available()
+            ? (1U << 0) | (1U << 1) | (1U << 2) | (1U << 3)
+                | (m_find_all_of != nullptr ? (1U << 4) : 0U)
+            : 0U;
     }
 
     bool UnrealReflectionApi::marshal_typed_value(
@@ -683,8 +663,7 @@ namespace RogueMod
                 return false;
             }
             const auto* inner_size_pointer = m_get_element_size(inner);
-            const auto inner_alignment = m_get_min_alignment(inner);
-            if (inner_size_pointer == nullptr || *inner_size_pointer <= 0 || inner_alignment <= 0)
+            if (inner_size_pointer == nullptr || *inner_size_pointer <= 0)
             {
                 return false;
             }
@@ -705,25 +684,44 @@ namespace RogueMod
                 }
             }
 
-            alignas(8) FScriptArrayLayout temporary{};
-            m_initialize_value(property, &temporary);
-            PropertyValueCleanup cleanup(m_destroy_value);
-            cleanup.add(property, &temporary);
-            if (value.reserved != 0)
+            auto& destination = *static_cast<FScriptArrayLayout*>(address);
+            if (destination.num < 0 || destination.max < destination.num
+                || (destination.max != 0 && destination.data == nullptr))
             {
-                const auto bytes = static_cast<std::size_t>(value.reserved) * inner_size;
-                temporary.data = m_fmemory_malloc(bytes, static_cast<std::uint32_t>(inner_alignment));
-                if (temporary.data == nullptr)
-                {
-                    return false;
-                }
-                temporary.max = static_cast<std::int32_t>(value.reserved);
-                auto* data = static_cast<std::byte*>(temporary.data);
+                return false;
+            }
+
+            // Preserve the existing allocation when the logical size is unchanged.
+            // Besides avoiding needless work for generated read/modify/write code,
+            // this is required for UE-owned slack buffers: their allocation policy
+            // is not interchangeable with the UE4SS FMemory wrapper in this build.
+            if (value.reserved == static_cast<std::uint32_t>(destination.num))
+            {
+                auto* destination_data = static_cast<std::byte*>(destination.data);
                 for (std::uint32_t index = 0; index < value.reserved; ++index)
                 {
-                    auto* element_address = data + static_cast<std::size_t>(index) * inner_size;
-                    m_initialize_value(inner, element_address);
-                    ++temporary.num;
+                    auto* element_address = destination_data + static_cast<std::size_t>(index) * inner_size;
+                    if (inner_kind == UnrealPropertyKind::Object)
+                    {
+                        void* target{};
+                        if (elements[index].data != 0)
+                        {
+                            target = const_cast<void*>(resolve_handle(elements[index].data));
+                            if (target == nullptr)
+                            {
+                                return false;
+                            }
+                        }
+                        // TObjectPtr may not use a raw UObject pointer representation
+                        // in every UE5 build. Preserve equal values without rewriting
+                        // their storage; reject replacement until a build-specific
+                        // setter is available.
+                        if (m_get_object_property_value(inner, element_address) != target)
+                        {
+                            return false;
+                        }
+                        continue;
+                    }
                     if (!assign_typed_value(
                             inner,
                             element_address,
@@ -733,8 +731,62 @@ namespace RogueMod
                         return false;
                     }
                 }
+                return true;
             }
-            m_copy_complete_value(property, address, &temporary);
+
+            // Replacing a non-empty UE-owned allocation would require routing the
+            // release through the game's exact allocator implementation. Refuse the
+            // operation instead of risking heap corruption.
+            if (destination.data != nullptr || destination.max != 0)
+            {
+                return false;
+            }
+
+            alignas(8) FScriptArrayLayout temporary{};
+            if (value.reserved != 0)
+            {
+                const auto bytes = static_cast<std::size_t>(value.reserved) * inner_size;
+                temporary.data = m_fmemory_malloc(bytes, 0);
+                if (temporary.data == nullptr)
+                {
+                    return false;
+                }
+                temporary.max = static_cast<std::int32_t>(value.reserved);
+                auto* data = static_cast<std::byte*>(temporary.data);
+                for (std::uint32_t index = 0; index < value.reserved; ++index)
+                {
+                    auto* element_address = data + static_cast<std::size_t>(index) * inner_size;
+                    std::memset(element_address, 0, inner_size);
+                    if (inner_kind == UnrealPropertyKind::String)
+                    {
+                        m_fstring_default_constructor(element_address);
+                    }
+                    else if (inner_kind == UnrealPropertyKind::Name)
+                    {
+                        m_fname_default_constructor(element_address);
+                    }
+                    else if (inner_kind == UnrealPropertyKind::Text)
+                    {
+                        m_ftext_default_constructor(element_address);
+                    }
+                    ++temporary.num;
+                    if (!assign_typed_value(
+                            inner,
+                            element_address,
+                            static_cast<std::uint32_t>(inner_kind),
+                            elements[index]))
+                    {
+                        destroy_array_value(property, &temporary, encoded_kind);
+                        return false;
+                    }
+                }
+            }
+
+            std::swap(destination, temporary);
+            if (temporary.data != nullptr || temporary.num != 0 || temporary.max != 0)
+            {
+                destroy_array_value(property, &temporary, encoded_kind);
+            }
             return true;
         }
 
@@ -744,6 +796,49 @@ namespace RogueMod
         }
         std::memcpy(address, &value.data, fixed_size);
         return true;
+    }
+
+    void UnrealReflectionApi::destroy_array_value(
+        void* property,
+        void* address,
+        std::uint32_t encoded_kind) const
+    {
+        if (property == nullptr || address == nullptr)
+        {
+            return;
+        }
+
+        auto& array = *static_cast<FScriptArrayLayout*>(address);
+        if (array.data == nullptr)
+        {
+            array = {};
+            return;
+        }
+
+        auto** inner_pointer = m_get_array_inner(property);
+        auto* inner = inner_pointer == nullptr ? nullptr : *inner_pointer;
+        const auto* inner_size_pointer = inner == nullptr ? nullptr : m_get_element_size(inner);
+        const auto inner_kind = decode_array_element_kind(encoded_kind);
+        if (inner_size_pointer != nullptr && *inner_size_pointer > 0 && array.num > 0 && array.num <= array.max)
+        {
+            const auto inner_size = static_cast<std::size_t>(*inner_size_pointer);
+            auto* data = static_cast<std::byte*>(array.data);
+            for (std::int32_t index = array.num; index > 0; --index)
+            {
+                auto* element = data + static_cast<std::size_t>(index - 1) * inner_size;
+                if (inner_kind == UnrealPropertyKind::String)
+                {
+                    m_fstring_destructor(element);
+                }
+                else if (inner_kind == UnrealPropertyKind::Text)
+                {
+                    m_ftext_destructor(element);
+                }
+            }
+        }
+
+        m_fmemory_free(array.data);
+        array = {};
     }
 
     std::int32_t UnrealReflectionApi::write_property(
@@ -991,7 +1086,17 @@ namespace RogueMod
 
             FStringCleanup string_cleanup(m_fstring_destructor);
             FStringCleanup text_cleanup(m_ftext_destructor);
-            PropertyValueCleanup property_cleanup(m_destroy_value);
+            std::vector<std::tuple<void*, void*, std::uint32_t>> array_values;
+            ScopeExit array_cleanup([&]()
+            {
+                for (auto iterator = array_values.rbegin(); iterator != array_values.rend(); ++iterator)
+                {
+                    destroy_array_value(
+                        std::get<0>(*iterator),
+                        std::get<1>(*iterator),
+                        std::get<2>(*iterator));
+                }
+            });
             for (std::uint32_t index = 0; index < parameter_count; ++index)
             {
                 auto& parameter = parameters[index];
@@ -1049,8 +1154,8 @@ namespace RogueMod
                 else if (kind == UnrealPropertyKind::Array)
                 {
                     auto* property = parameter_properties[index];
-                    m_initialize_value(property, address);
-                    property_cleanup.add(property, address);
+                    std::memset(address, 0, sizeof(FScriptArrayLayout));
+                    array_values.emplace_back(property, address, parameter.kind);
                     if (is_input && !assign_typed_value(property, address, parameter.kind, parameter.value))
                     {
                         return -5;
@@ -1175,6 +1280,59 @@ namespace RogueMod
             return 0;
         }
         return make_handle(m_find_first_of(class_name));
+    }
+
+    std::int32_t UnrealReflectionApi::find_all_of(
+        const wchar_t* class_name,
+        std::uint64_t* handles,
+        std::uint32_t capacity,
+        std::uint32_t* required) const
+    {
+        if (required == nullptr)
+        {
+            return -2;
+        }
+        *required = 0;
+        if (!is_available() || m_find_all_of == nullptr || class_name == nullptr || *class_name == L'\0')
+        {
+            return -1;
+        }
+
+        try
+        {
+            std::vector<void*> objects;
+            m_find_all_of(class_name, objects);
+            std::vector<std::uint64_t> valid_handles;
+            valid_handles.reserve(objects.size());
+            for (const auto* object : objects)
+            {
+                const auto handle = make_handle(object);
+                if (handle != 0)
+                {
+                    valid_handles.push_back(handle);
+                }
+            }
+            if (valid_handles.size() > UINT32_MAX)
+            {
+                return -3;
+            }
+            *required = static_cast<std::uint32_t>(valid_handles.size());
+            if (valid_handles.empty())
+            {
+                return 0;
+            }
+            if (handles == nullptr || capacity < valid_handles.size())
+            {
+                return 1;
+            }
+            std::copy(valid_handles.begin(), valid_handles.end(), handles);
+            return 0;
+        }
+        catch (...)
+        {
+            *required = 0;
+            return -4;
+        }
     }
 
     bool UnrealReflectionApi::is_valid(std::uint64_t handle) const

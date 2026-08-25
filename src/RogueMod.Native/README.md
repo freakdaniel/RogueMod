@@ -14,7 +14,7 @@ The bridge deliberately uses a minimal header-only declaration of `CppUserModBas
 
 ## Versioned boundary
 
-The bridge ABI exposes a structure with size and version fields followed by function pointers. ABI 9 exposes the game-root package directory, Unreal object handles, capabilities, primitive/object/`FString`/`FName`/`FText`/POD-struct/`TArray` property reads and writes, and UFunction input/return/out marshalling:
+The bridge ABI exposes a structure with size and version fields followed by function pointers. ABI 10 exposes the game-root package directory, single and multi-object discovery, Unreal object handles, capabilities, primitive/object/`FString`/`FName`/`FText`/POD-struct/`TArray` property reads and writes, and UFunction input/return/out marshalling:
 
     struct RogueModHostApi {
         uint32_t size;
@@ -33,9 +33,12 @@ The bridge ABI exposes a structure with size and version fields followed by func
         int32_t (*unreal_write_property)(uint64_t handle, const wchar_t* property_name, uint32_t kind, const UnrealValue* value);
         int32_t (*unreal_invoke)(uint64_t handle, const wchar_t* function_name, uint32_t parameter_count, UnrealParameter* parameters);
         const wchar_t* game_mods_root;
+        int32_t (*unreal_find_all_of)(const wchar_t* class_name, uint64_t* handles, uint32_t capacity, uint32_t* required);
     };
 
-The host table carries logging and startup metadata. Reverse calls use the managed `DispatchGameEvent` entry point and the stable numeric `ModGameEventKind` values. Every call checks ABI inputs before use. Startup and input strings are UTF-16 and owned by the caller for the duration of a call. Reflection output strings, POD byte buffers, and recursive array values are allocated with `CoTaskMemAlloc`; managed code copies them and releases them with `Marshal.FreeCoTaskMem`. Unreal-owned `FString`, `FName`, `FText`, and `TArray` values use constructors, destructors, live `FProperty` operations, and `FMemory` exported by UE4SS.
+The host table carries logging and startup metadata. Reverse calls use the managed `DispatchGameEvent` entry point and the stable numeric `ModGameEventKind` values. Every call checks ABI inputs before use. Startup and input strings are UTF-16 and owned by the caller for the duration of a call. Reflection output strings, POD byte buffers, and recursive array values are allocated with `CoTaskMemAlloc`; managed code copies them and releases them with `Marshal.FreeCoTaskMem`. Unreal-owned `FString`, `FName`, and `FText` values use their exported constructors and destructors. `TArray` storage uses exported `FMemory` allocation plus type-specific element construction and destruction; the bridge deliberately avoids generic `FProperty` copy/destruction virtual paths that are incompatible with the supported game build.
+
+The installed UE4SS build does not expose a safe setter for Deadzone: Rogue's non-empty `TArray<TObjectPtr<...>>` elements. Reads and function outputs are supported, while replacement of those elements is rejected instead of writing a raw pointer into build-specific `TObjectPtr` storage.
 
 ## Native C++ mods
 

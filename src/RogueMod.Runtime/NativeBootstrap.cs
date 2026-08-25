@@ -7,7 +7,7 @@ namespace RogueMod.Runtime;
 /// <summary>Entry points invoked by the native UE4SS bridge through hostfxr.</summary>
 public static unsafe class NativeBootstrap
 {
-    private const uint SupportedAbiVersion = 9;
+    private const uint SupportedAbiVersion = 10;
     private static NativeHostApi _hostApi;
     private static ManagedRuntimeCoordinator? _coordinator;
     private static int _initialized;
@@ -51,7 +51,8 @@ public static unsafe class NativeBootstrap
                 candidate.UnrealGetCapabilities,
                 candidate.UnrealReadProperty,
                 candidate.UnrealWriteProperty,
-                candidate.UnrealInvoke);
+                candidate.UnrealInvoke,
+                candidate.UnrealFindAllOf);
             _coordinator = new ManagedRuntimeCoordinator(gameModsRoot, gameProfileId, unreal, Log);
             _coordinator.LoadAsync().AsTask().GetAwaiter().GetResult();
             LogRuntime(ModLogLevel.Information, $"Managed runtime initialized. Loaded {_coordinator.LoadedCount} mod(s).");
@@ -157,5 +158,6 @@ public static unsafe class NativeBootstrap
         public readonly delegate* unmanaged[Cdecl]<ulong, char*, uint, NativeUnrealReflection.NativeUnrealValue*, int> UnrealWriteProperty;
         public readonly delegate* unmanaged[Cdecl]<ulong, char*, uint, NativeUnrealReflection.NativeUnrealParameter*, int> UnrealInvoke;
         public readonly char* GameModsRoot;
+        public readonly delegate* unmanaged[Cdecl]<char*, ulong*, uint, uint*, int> UnrealFindAllOf;
     }
 }
