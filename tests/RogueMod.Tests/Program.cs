@@ -72,11 +72,14 @@ public sealed class RogueModTests
         Assert((uint)NativePropertyKind.Array == 17, "Array ABI kind changed.");
         Assert((uint)NativePropertyKind.Optional == 18, "Optional ABI kind changed.");
         Assert((uint)NativePropertyKind.LazyObject == 20, "Lazy-object ABI kind changed.");
+        Assert((uint)NativePropertyKind.Interface == 22, "Interface ABI kind changed.");
 
         Assert(NativeReflectionTypeRegistry.GetPropertyKind("EnumProperty:/Script/Test.Mode", 4) == NativePropertyKind.UInt32,
             "Enum storage was not resolved through the shared type registry.");
         Assert(NativeReflectionTypeRegistry.GetPropertyKind("ArrayProperty", 16) == NativePropertyKind.Array,
             "TArray was not resolved through the shared type registry.");
+        Assert(NativeReflectionTypeRegistry.GetPropertyKind("InterfaceProperty:/Script/TeamSupport.WithTeamInterface", 16) == NativePropertyKind.Interface,
+            "FScriptInterface was not resolved through the shared type registry.");
         Assert(NativeReflectionTypeRegistry.DecodePropertyKind(17U | 6U << 8) == NativePropertyKind.Array,
             "Nested container encoding did not preserve the outer ABI kind.");
 
@@ -89,6 +92,11 @@ public sealed class RogueModTests
         var handleWire = NativeScalarValueCodec.Encode(NativePropertyKind.Object, handle);
         Assert(NativeScalarValueCodec.Decode(NativePropertyKind.Object, handleWire) is UnrealObjectHandle decodedHandle
             && decodedHandle == handle, "UObject handle scalar codec did not round-trip.");
+
+        var interfaceHandle = new UnrealObjectHandle(0x1212_3456UL);
+        var interfaceWire = NativeScalarValueCodec.Encode(NativePropertyKind.Interface, interfaceHandle);
+        Assert(NativeScalarValueCodec.Decode(NativePropertyKind.Interface, interfaceWire) is UnrealObjectHandle decodedInterface
+            && decodedInterface == interfaceHandle, "UInterface handle scalar codec did not round-trip.");
     }
 
     static unsafe void NativeFunctionHooksDispatchAndUnregister()
@@ -714,6 +722,8 @@ public sealed class RogueModTests
             Assert(NativeBootstrapTestCallbacks.Messages.Contains("[C#:sample.mod] lazy:11111111-22222222-33333333-44444444:/Test/PlayerController"), "Lazy UObject UFunction input and return values were not marshalled.");
             Assert(NativeBootstrapTestCallbacks.Messages.Contains("[C#:sample.mod] soft:/Game/Test/ManagedAbi.ManagedAbi:/Test/PlayerController"), "Soft UObject property path and cached target were not marshalled.");
             Assert(NativeBootstrapTestCallbacks.SoftPropertyWritten, "A soft UObject property was not round-tripped.");
+            Assert(NativeBootstrapTestCallbacks.Messages.Contains("[C#:sample.mod] property:Leader=/Test/PlayerController"), "Generated-style interface UObject property was not read.");
+            Assert(NativeBootstrapTestCallbacks.Messages.Contains("[C#:sample.mod] interface:/Test/PlayerController"), "Interface UObject UFunction input and return values were not marshalled.");
             Assert(NativeBootstrapTestCallbacks.Messages.Contains("[C#:sample.mod] created:000000070000002B"), "Managed object creation did not reach the native ABI.");
             Assert(NativeBootstrapTestCallbacks.ObjectCreated, "Managed object creation arguments were not forwarded correctly.");
             Assert(NativeBootstrapTestCallbacks.Messages.Contains("[C#:sample.mod] spawned:000000070000002C"), "Managed actor spawning did not reach the native ABI.");

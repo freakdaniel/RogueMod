@@ -99,6 +99,7 @@ namespace RogueMod
             case UnrealPropertyKind::WeakObject: return 8;
             case UnrealPropertyKind::LazyObject: return lazy_object_storage_size;
             case UnrealPropertyKind::SoftObject: return soft_object_storage_size;
+            case UnrealPropertyKind::Interface: return 16;
             case UnrealPropertyKind::String:
             case UnrealPropertyKind::Text:
             case UnrealPropertyKind::Array: return 16;
@@ -672,6 +673,7 @@ namespace RogueMod
                        && m_soft_object_destroy_value != nullptr
                     ? (1U << 12)
                     : 0U)
+                | (1U << 13)
             : 0U;
     }
 
@@ -717,6 +719,15 @@ namespace RogueMod
                 return false;
             }
             value.data = make_handle(target);
+            return true;
+        }
+        if (kind == UnrealPropertyKind::Interface)
+        {
+            // FScriptInterface is a 16-byte pair: a raw UObject* object pointer at +0 and an
+            // IInterface* interface pointer at +8. Managed transport carries the object only;
+            // the engine lazily re-resolves the interface pointer from the object when needed.
+            const auto* object_pointer = *static_cast<void* const*>(address);
+            value.data = make_handle(object_pointer);
             return true;
         }
         if (kind == UnrealPropertyKind::SoftObject)
@@ -1010,6 +1021,26 @@ namespace RogueMod
                 default:
                     return -4;
             }
+        }
+        if (kind == UnrealPropertyKind::Interface)
+        {
+            // Temporary-slot write (ProcessEvent parameter buffers, hook replacement, and
+            // array/optional scratch storage). FScriptInterface stores a raw UObject* at +0;
+            // the engine lazily re-resolves the interface pointer from the object, so +8 is
+            // zeroed rather than inferred. Persistent property writes are gated in
+            // write_property until the game's incremental-GC write path is live-confirmed.
+            void* target{};
+            if (value.data != 0)
+            {
+                target = const_cast<void*>(resolve_handle(value.data));
+                if (target == nullptr)
+                {
+                    return -4;
+                }
+            }
+            std::memcpy(address, &target, sizeof(target));
+            std::memset(static_cast<std::byte*>(address) + sizeof(target), 0, 8);
+            return 0;
         }
         if (kind == UnrealPropertyKind::SoftObject)
         {
@@ -1564,6 +1595,108 @@ namespace RogueMod
         return 0;
     }
 
+    std::int32_t UnrealReflectionApi::assign_interface_object_property(
+        void* object,
+        const wchar_t* property_name,
+        const UnrealValue& value) const
+    {
+        if (object == nullptr || property_name == nullptr || *property_name == L'\0'
+            || value.kind != static_cast<std::uint32_t>(UnrealPropertyKind::Interface)
+            || m_get_property_by_name_in_chain == nullptr || m_get_offset == nullptr)
+        {
+            return -4;
+        }
+
+        auto* property = m_get_property_by_name_in_chain(object, property_name);
+        if (property == nullptr)
+        {
+            return -3;
+        }
+        const auto* offset = m_get_offset(property);
+        if (offset == nullptr || *offset < 0)
+        {
+            return -4;
+        }
+        auto* address = static_cast<std::byte*>(object) + *offset;
+
+        if (value.data == 0)
+        {
+            // Clearing removes a reference; reference removal is safe under incremental GC
+            // without a write barrier. FScriptInterface is a POD (CPF_ZeroConstructor |
+            // CPF_NoDestructor), so zeroing the complete 16-byte slot is the default state.
+            std::memset(address, 0, 16);
+            return 0;
+        }
+
+        void* target = const_cast<void*>(resolve_handle(value.data));
+        if (target == nullptr)
+        {
+            return -4;
+        }
+
+        if (m_static_find_object == nullptr || m_get_function_by_name_in_chain == nullptr
+            || m_get_parms_size == nullptr || m_get_num_parms == nullptr
+            || m_get_first_property == nullptr || m_get_next_field_as_property == nullptr
+            || m_process_event == nullptr || m_fname_constructor == nullptr)
+        {
+            return -4;
+        }
+
+        // KismetSystemLibrary.SetInterfacePropertyByName is the engine's canonical interface
+        // setter: it finds the property by name and validates that the target object's class
+        // implements the interface (UClass::ImplementsInterface) before assigning, applying
+        // the engine's own property write. The FScriptInterface value carries the raw object
+        // pointer at +0 and a null interface pointer at +8: that is a valid engine state
+        // (blueprint-only interfaces and deserialized values store only ObjectPointer), and
+        // the engine lazily re-resolves the interface pointer from the object.
+        auto* library = m_static_find_object(
+            nullptr,
+            nullptr,
+            L"/Script/Engine.Default__KismetSystemLibrary",
+            false);
+        auto* set_property = library == nullptr
+            ? nullptr
+            : m_get_function_by_name_in_chain(library, L"SetInterfacePropertyByName");
+        const auto* parms_size = set_property == nullptr ? nullptr : m_get_parms_size(set_property);
+        const auto* num_parms = set_property == nullptr ? nullptr : m_get_num_parms(set_property);
+        auto* object_property = set_property == nullptr ? nullptr : m_get_first_property(set_property);
+        auto* name_property = object_property == nullptr
+            ? nullptr
+            : m_get_next_field_as_property(object_property);
+        auto* value_property = name_property == nullptr
+            ? nullptr
+            : m_get_next_field_as_property(name_property);
+        auto has_layout = [&](void* property, std::int32_t offset, std::int32_t size)
+        {
+            const auto* live_offset = property == nullptr ? nullptr : m_get_offset(property);
+            const auto* live_size = property == nullptr ? nullptr : m_get_element_size(property);
+            return live_offset != nullptr && live_size != nullptr
+                && *live_offset == offset && *live_size == size;
+        };
+        if (set_property == nullptr || parms_size == nullptr || *parms_size != 32
+            || num_parms == nullptr || *num_parms != 3
+            || !has_layout(object_property, 0, 8)
+            || !has_layout(name_property, 8, 8)
+            || !has_layout(value_property, 16, 16))
+        {
+            return -7;
+        }
+
+        std::vector<std::byte> setter_buffer(32);
+        std::memcpy(setter_buffer.data(), &object, sizeof(object));
+        m_fname_constructor(setter_buffer.data() + 8, property_name, 1, nullptr);
+        std::memcpy(setter_buffer.data() + 16, &target, sizeof(target));
+        std::memset(setter_buffer.data() + 24, 0, 8);
+        m_process_event(library, set_property, setter_buffer.data());
+
+        // SetInterfacePropertyByName silently skips a value whose object does not implement
+        // the target interface. Verify the object pointer actually landed and surface a clear
+        // failure status instead of a silent no-op.
+        void* written{};
+        std::memcpy(&written, address, sizeof(written));
+        return written == target ? 0 : -7;
+    }
+
     std::int32_t UnrealReflectionApi::write_property(
         std::uint64_t handle,
         const wchar_t* property_name,
@@ -1610,6 +1743,14 @@ namespace RogueMod
             if (property_kind == UnrealPropertyKind::SoftObject)
             {
                 return assign_soft_object_property(object, property_name, *value);
+            }
+            if (property_kind == UnrealPropertyKind::Interface)
+            {
+                // Persistent FScriptInterface writes route through the engine's canonical
+                // KismetSystemLibrary.SetInterfacePropertyByName (which validates the target
+                // implements the interface) plus a direct clear for null values; assign
+                // verifies the write landed and reports a rejection otherwise.
+                return assign_interface_object_property(object, property_name, *value);
             }
             auto* address = static_cast<std::byte*>(object) + *offset;
             return assign_typed_value(property, address, encoded_property_kind, *value);
@@ -2008,6 +2149,20 @@ namespace RogueMod
                         }
                     }
                     std::memcpy(address, &target, sizeof(target));
+                }
+                else if (kind == UnrealPropertyKind::Interface)
+                {
+                    void* target{};
+                    if (parameter.value.data != 0)
+                    {
+                        target = const_cast<void*>(resolve_handle(parameter.value.data));
+                        if (target == nullptr)
+                        {
+                            return -7;
+                        }
+                    }
+                    std::memcpy(address, &target, sizeof(target));
+                    std::memset(address + sizeof(target), 0, 8);
                 }
                 else if (kind == UnrealPropertyKind::Struct)
                 {

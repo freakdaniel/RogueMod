@@ -16,12 +16,14 @@ public sealed class DeadzoneLiveReflectionProbe : IRogueMod, IRogueModGameEvents
         ObjectCreation = 1 << 5,
         ActorSpawn = 1 << 6,
         SoftObject = 1 << 7,
-        All = Optional | WeakReference | LazyReference | NameArray | ObjectPtr | ObjectCreation | ActorSpawn | SoftObject
+        Interface = 1 << 8,
+        All = Optional | WeakReference | LazyReference | NameArray | ObjectPtr | ObjectCreation | ActorSpawn | SoftObject | Interface
     }
 
     private const LiveFeature EnabledFeatures = LiveFeature.All;
     private const int MaximumUpdateAttempts = 1_800;
     private const string NameArrayMarker = "RogueModLiveProbe";
+
     private static readonly UnrealArrayDescriptor ActorTagsValue = new("NameProperty", 8);
     private static readonly UnrealPropertyDescriptor ActorTagsProperty = new(
         "/Script/Engine.Actor",
@@ -119,6 +121,15 @@ public sealed class DeadzoneLiveReflectionProbe : IRogueMod, IRogueModGameEvents
             "CPF_Parm | CPF_ZeroConstructor | CPF_NoDestructor | CPF_HasGetValueTypeHash | CPF_NativeAccessSpecifierPublic",
             8)]);
 
+    private static readonly UnrealPropertyDescriptor ChooserInputValueProperty = new(
+        "/Script/Chooser.ChooserColumnBool",
+        "InputValue",
+        "InterfaceProperty:/Script/Chooser.ChooserParameterBool",
+        48,
+        1,
+        "CPF_Edit | CPF_ZeroConstructor | CPF_IsPlainOldData | CPF_NoDestructor | CPF_UObjectWrapper | CPF_HasGetValueTypeHash | CPF_NativeAccessSpecifierPublic",
+        16);
+
     private IModContext? context;
     private int updateAttempts;
     private bool optionalCompleted;
@@ -134,6 +145,7 @@ public sealed class DeadzoneLiveReflectionProbe : IRogueMod, IRogueModGameEvents
     private bool actorSpawnFailureLogged;
     private bool softObjectCompleted;
     private bool softObjectFailureLogged;
+    private bool interfaceCompleted;
 
     public ValueTask LoadAsync(IModContext modContext, CancellationToken cancellationToken = default)
     {
@@ -158,7 +170,8 @@ public sealed class DeadzoneLiveReflectionProbe : IRogueMod, IRogueModGameEvents
                 && IsComplete(LiveFeature.ObjectPtr, objectPtrCompleted)
                 && IsComplete(LiveFeature.ObjectCreation, objectCreationCompleted)
                 && IsComplete(LiveFeature.ActorSpawn, actorSpawnCompleted)
-                && IsComplete(LiveFeature.SoftObject, softObjectCompleted)))
+                && IsComplete(LiveFeature.SoftObject, softObjectCompleted)
+                && IsComplete(LiveFeature.Interface, interfaceCompleted)))
         {
             return;
         }
@@ -205,6 +218,10 @@ public sealed class DeadzoneLiveReflectionProbe : IRogueMod, IRogueModGameEvents
             {
                 context.Logger.Log(ModLogLevel.Error, "LIVE-SOFT FAIL: no soft object reference round-trip completed");
             }
+            if (IsEnabled(LiveFeature.Interface) && !interfaceCompleted)
+            {
+                context.Logger.Log(ModLogLevel.Error, "LIVE-INTERFACE FAIL: no interface property read/write/restore round-trip completed");
+            }
         }
     }
 
@@ -217,7 +234,7 @@ public sealed class DeadzoneLiveReflectionProbe : IRogueMod, IRogueModGameEvents
         // Object enumeration is inherently unstable while Unreal is creating and destroying
         // startup objects. Run at most one probe per callback so retries cannot cascade through
         // several FindAllOf calls and mutations in the same frame.
-        switch (updateAttempts % 8)
+        switch (updateAttempts % 9)
         {
             case 0: TryVerifyOptional(); break;
             case 1: TryVerifyWeakReference(); break;
@@ -227,6 +244,7 @@ public sealed class DeadzoneLiveReflectionProbe : IRogueMod, IRogueModGameEvents
             case 5: TryVerifyObjectCreation(); break;
             case 6: TryVerifyActorSpawn(); break;
             case 7: TryVerifySoftObject(); break;
+            case 8: TryVerifyInterface(); break;
         }
     }
 
@@ -292,6 +310,91 @@ public sealed class DeadzoneLiveReflectionProbe : IRogueMod, IRogueModGameEvents
 
     private static UnrealSoftObjectValue ReadSoftObject(IUnrealReflection unreal, UnrealObjectHandle owner) =>
         unreal.ReadProperty(owner, LevelStreamingWorldAssetProperty).As<UnrealSoftObjectValue>();
+
+    private void TryVerifyInterface()
+    {
+        if ((EnabledFeatures & LiveFeature.Interface) == 0
+            || interfaceCompleted
+            || context is null
+            || !context.Unreal.IsAvailable
+            || (context.Unreal.Capabilities & UnrealReflectionCapabilities.InterfaceReferences) == 0)
+        {
+            return;
+        }
+
+        // Write verification targets a freshly created inert ChooserColumnBool whose InputValue
+        // interface property is never consumed by gameplay, so a misbehaving engine setter
+        // cannot corrupt an actively used reference.
+        var unreal = context.Unreal;
+        var classHandle = unreal.FindFirstOf("/Script/Chooser.ChooserColumnBool");
+        var outer = unreal.FindFirstOf("/Script/AIModule.Default__AIController");
+        if (classHandle.IsNull || !unreal.IsValid(classHandle)
+            || outer.IsNull || !unreal.IsValid(outer))
+        {
+            return;
+        }
+
+        try
+        {
+            VerifyInterfaceRoundTrip();
+            interfaceCompleted = true;
+        }
+        catch (Exception exception)
+        {
+            context.Logger.Log(ModLogLevel.Debug, $"LIVE-INTERFACE rejected: {exception.Message}");
+        }
+    }
+
+    private void VerifyInterfaceRoundTrip()
+    {
+        var unreal = context!.Unreal;
+        var classHandle = unreal.FindFirstOf("/Script/Chooser.ChooserColumnBool");
+        var outer = unreal.FindFirstOf("/Script/AIModule.Default__AIController");
+        var created = unreal.CreateObject(classHandle, outer, "RogueModLiveProbeInterface");
+        if (created.IsNull || !unreal.IsValid(created))
+        {
+            throw new InvalidOperationException("created ChooserColumnBool is null or stale");
+        }
+
+        var original = unreal.ReadProperty(created, ChooserInputValueProperty).AsObjectHandle();
+        var originalText = DescribeHandle(unreal, original);
+
+        // SET: write the property's own value back. A self-referential InputValue already
+        // carries an object that (if the class implements the interface) the engine accepts,
+        // confirming the SetInterfacePropertyByName path lands.
+        if (!original.IsNull)
+        {
+            unreal.WriteProperty(created, ChooserInputValueProperty, UnrealValue.From(original));
+            var setBack = unreal.ReadProperty(created, ChooserInputValueProperty).AsObjectHandle();
+            if (setBack != original)
+            {
+                throw new InvalidOperationException(
+                    $"interface set did not stick: original={originalText} actual={DescribeHandle(unreal, setBack)}");
+            }
+        }
+
+        // CLEAR: a null interface reference is written directly. SetInterfacePropertyByName
+        // skips null values in UE5, so the bridge zeroes the FScriptInterface slot.
+        unreal.WriteProperty(created, ChooserInputValueProperty, UnrealValue.From(UnrealObjectHandle.Null));
+        var cleared = unreal.ReadProperty(created, ChooserInputValueProperty).AsObjectHandle();
+        if (!cleared.IsNull)
+        {
+            throw new InvalidOperationException(
+                $"interface clear did not stick: actual={DescribeHandle(unreal, cleared)}");
+        }
+
+        unreal.WriteProperty(created, ChooserInputValueProperty, UnrealValue.From(original));
+        var restored = unreal.ReadProperty(created, ChooserInputValueProperty).AsObjectHandle();
+        if (restored != original)
+        {
+            throw new InvalidOperationException("original interface reference was not restored");
+        }
+
+        context.Logger.Log(
+            ModLogLevel.Information,
+            $"LIVE-INTERFACE PASS: {unreal.GetPathName(created)} property={ChooserInputValueProperty.Name} " +
+            $"original={originalText} set=ok clear=ok restore=ok");
+    }
 
     private void TryVerifyActorSpawn()
     {

@@ -29,6 +29,7 @@ internal static class NativeReflectionTypeRegistry
             "FloatProperty" => NativePropertyKind.Float,
             "DoubleProperty" => NativePropertyKind.Double,
             "ObjectProperty" or "ClassProperty" => NativePropertyKind.Object,
+            "InterfaceProperty" when size == 16 => NativePropertyKind.Interface,
             "WeakObjectProperty" when size == 8 => NativePropertyKind.WeakObject,
             "LazyObjectProperty" when size == UnrealLazyObjectValue.NativeStorageSize => NativePropertyKind.LazyObject,
             "SoftObjectProperty" when size == UnrealSoftObjectValue.NativeStorageSize => NativePropertyKind.SoftObject,
@@ -91,7 +92,7 @@ internal static class NativeScalarValueCodec
         NativePropertyKind.UInt64 => data,
         NativePropertyKind.Float => BitConverter.Int32BitsToSingle(unchecked((int)data)),
         NativePropertyKind.Double => BitConverter.Int64BitsToDouble(unchecked((long)data)),
-        NativePropertyKind.Object or NativePropertyKind.WeakObject => new UnrealObjectHandle(data),
+        NativePropertyKind.Object or NativePropertyKind.WeakObject or NativePropertyKind.Interface => new UnrealObjectHandle(data),
         _ => throw new InvalidOperationException($"Unreal property kind '{kind}' is not a scalar wire value.")
     };
 
@@ -125,7 +126,7 @@ internal static class NativeScalarValueCodec
             NativePropertyKind.UInt64 when managed is ulong typed => typed,
             NativePropertyKind.Float when managed is float typed => unchecked((uint)BitConverter.SingleToInt32Bits(typed)),
             NativePropertyKind.Double when managed is double typed => unchecked((ulong)BitConverter.DoubleToInt64Bits(typed)),
-            NativePropertyKind.Object or NativePropertyKind.WeakObject when managed is UnrealObjectHandle typed => typed.Value,
+            NativePropertyKind.Object or NativePropertyKind.WeakObject or NativePropertyKind.Interface when managed is UnrealObjectHandle typed => typed.Value,
             _ => throw new InvalidCastException(
                 $"Unreal property kind '{kind}' cannot be written from managed value type " +
                 $"'{value?.GetType().FullName ?? "null"}'.")
@@ -155,7 +156,8 @@ internal enum NativePropertyKind : uint
     Optional = 18,
     WeakObject = 19,
     LazyObject = 20,
-    SoftObject = 21
+    SoftObject = 21,
+    Interface = 22
 }
 
 internal enum StructFieldKind

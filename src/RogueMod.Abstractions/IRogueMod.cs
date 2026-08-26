@@ -127,7 +127,8 @@ public enum UnrealReflectionCapabilities
     FunctionHooks = 1 << 9,
     ObjectCreation = 1 << 10,
     ActorSpawning = 1 << 11,
-    SoftObjectReferences = 1 << 12
+    SoftObjectReferences = 1 << 12,
+    InterfaceReferences = 1 << 13
 }
 
 public enum UnrealHookPhase

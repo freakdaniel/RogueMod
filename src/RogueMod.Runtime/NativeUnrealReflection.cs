@@ -1130,6 +1130,11 @@ internal sealed unsafe class NativeUnrealReflection(
         {
             throw new NotSupportedException("The active RogueMod bridge does not support soft object references.");
         }
+        if (kind == NativePropertyKind.Interface
+            && (Capabilities & UnrealReflectionCapabilities.InterfaceReferences) == 0)
+        {
+            throw new NotSupportedException("The active RogueMod bridge does not support interface references.");
+        }
     }
 
     private static UnrealStructDescriptor RequireStructDescriptor(UnrealStructDescriptor? descriptor)

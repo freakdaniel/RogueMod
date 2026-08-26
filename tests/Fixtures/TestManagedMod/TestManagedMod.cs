@@ -75,6 +75,10 @@ public sealed class TestManagedMod : IRogueMod, IRogueModGameEvents
                 var softController = playerController.SoftController;
                 _logger.Log(ModLogLevel.Information, $"soft:{softController.Path}:{softController.CachedTarget?.PathName}");
                 playerController.SoftController = softController;
+                var leader = playerController.Leader;
+                _logger.Log(ModLogLevel.Information, $"property:Leader={leader?.PathName}");
+                var interfaceResult = playerController.TestInterfaceMarshalling(playerController);
+                _logger.Log(ModLogLevel.Information, $"interface:{interfaceResult?.PathName}");
             }
             if ((context.Unreal.Capabilities & UnrealReflectionCapabilities.ObjectCreation) != 0)
             {
@@ -260,6 +264,24 @@ public sealed class TestManagedMod : IRogueMod, IRogueModGameEvents
                 1,
                 "CPF_Protected | CPF_UObjectWrapper",
                 40);
+        private static readonly UnrealPropertyDescriptor LeaderProperty =
+            new(
+                "/Script/Engine.PlayerController",
+                "Leader",
+                "InterfaceProperty:/Script/GameplayTags.GameplayTagAssetInterface",
+                1776,
+                1,
+                "CPF_Protected | CPF_ZeroConstructor | CPF_IsPlainOldData | CPF_NoDestructor",
+                16);
+        private static readonly UnrealFunctionDescriptor TestInterfaceMarshallingFunction = new(
+            "/Script/Engine.PlayerController",
+            "/Script/Engine.PlayerController:TestInterfaceMarshalling",
+            "TestInterfaceMarshalling",
+            "FUNC_Native | FUNC_Public",
+            [
+                new("Input", "InterfaceProperty:/Script/GameplayTags.GameplayTagAssetInterface", 0, 1, "CPF_Parm", 16),
+                new("ReturnValue", "InterfaceProperty:/Script/GameplayTags.GameplayTagAssetInterface", 16, 1, "CPF_Parm | CPF_OutParm | CPF_ReturnParm", 16)
+            ]);
         private static readonly UnrealFunctionDescriptor TestStructMarshallingFunction = new(
             "/Script/Engine.PlayerController",
             "/Script/Engine.PlayerController:TestStructMarshalling",
@@ -424,6 +446,19 @@ public sealed class TestManagedMod : IRogueMod, IRogueModGameEvents
                 ReadValue(SoftControllerProperty),
                 handle => new TestPlayerController(Unreal, handle));
             set => WriteValue(SoftControllerProperty, value.ToUnrealValue());
+        }
+
+        public TestPlayerController? Leader =>
+            ReadObject(LeaderProperty, static (unreal, handle) => new TestPlayerController(unreal, handle));
+
+        public TestPlayerController? TestInterfaceMarshalling(TestPlayerController? input)
+        {
+            var result = Call(
+                TestInterfaceMarshallingFunction,
+                new UnrealArgument("Input", UnrealValue.From(input?.Handle ?? UnrealObjectHandle.Null)));
+            return WrapObject(
+                result.ReturnValue,
+                static (unreal, handle) => new TestPlayerController(unreal, handle));
         }
 
         private static UnrealValue PackNestedArray(IReadOnlyList<IReadOnlyList<int>> values) =>

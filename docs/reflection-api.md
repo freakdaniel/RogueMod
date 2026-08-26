@@ -8,6 +8,7 @@ RogueMod extends reflection support as complete vertical slices: JMAP import, ge
 |---|---:|---:|---:|---:|---|
 | bool, signed/unsigned integers, enums, float, double | Yes | Yes | Yes | Yes | matching C# scalar |
 | strong object and class references | Yes | Yes | Yes | Yes, `TObjectPtr` swap/restore | generated wrapper / `UnrealObjectHandle` |
+| interface references (`FScriptInterface`) | Yes | Yes | Yes | Yes, set/clear/restore | generated wrapper / `UnrealObjectHandle` |
 | `FString`, `FName`, `FText` display value | Yes | Yes | Yes | Yes | `string` |
 | POD, no-destructor script structs | Yes | Yes | Yes | Yes | generated immutable record struct |
 | `TArray<T>` | Yes | Yes | Yes | Yes | `IReadOnlyList<T>` |
@@ -22,7 +23,7 @@ RogueMod extends reflection support as complete vertical slices: JMAP import, ge
 
 ABI 13 advertises `UnrealReflectionCapabilities.FunctionHooks`. The generated SDK emits strongly typed `Register<Function>PreHook` and `Register<Function>PostHook` helpers beside every callable wrapper. Their translated values are `ref` parameters. Assigning a new value in a pre hook replaces an input/ref parameter before the original call; assigning in a post hook replaces the return or out/ref value before it reaches the caller. The low-level `UnrealHookContext` exposes the same operations as `SetArgument`, `SetReturnValue`, and `SetOutArgument`.
 
-RogueMod only marks a parameter modified when its generated callback value changes. Replacement values are encoded through the same scalar, object, struct, string, array, optional, weak, and lazy transport used by invocation. All normal type and allocator restrictions still apply. `UnrealHookOptions` supplies a signed priority and an optional exact `UnrealObjectHandle` instance filter. Higher priorities run first; equal priorities retain registration order. Each replacement is committed before the next callback is marshalled, so hook chains observe the previous callback's value. Instance filtering occurs in native code before managed dispatch. ABI 13 does not prevent the original UFunction call: the installed UE4SS legacy global `ProcessEvent` callback export provides observation and parameter-buffer access but no callback-chain control object.
+RogueMod only marks a parameter modified when its generated callback value changes. Replacement values are encoded through the same scalar, object, interface, struct, string, array, optional, weak, and lazy transport used by invocation. All normal type and allocator restrictions still apply. `UnrealHookOptions` supplies a signed priority and an optional exact `UnrealObjectHandle` instance filter. Higher priorities run first; equal priorities retain registration order. Each replacement is committed before the next callback is marshalled, so hook chains observe the previous callback's value. Instance filtering occurs in native code before managed dispatch. ABI 13 does not prevent the original UFunction call: the installed UE4SS legacy global `ProcessEvent` callback export provides observation and parameter-buffer access but no callback-chain control object.
 
 The bridge owns one UE4SS `ProcessEvent` callback per phase and filters registered function pointers internally. Disposing the returned subscription removes one registration. Remaining registrations are removed automatically before the owning managed mod is unloaded.
 
@@ -42,7 +43,6 @@ Lazy object references are advertised through `UnrealReflectionCapabilities.Lazy
 |---|---|---|
 | `TMap<K,V>` | JMAP imports key/value metadata; transport is absent | live key/value descriptors, sparse storage iteration, construction, destruction, and hash reindexing through Unreal APIs |
 | `TSet<T>` | JMAP imports element metadata; transport is absent | live element descriptor plus Unreal-owned set allocation and hash maintenance |
-| interface references | generator recognizes the target class; runtime rejects the property kind | transport both object and interface identity according to `FScriptInterface` layout/helpers |
 | non-POD structs | rejected | per-field construction/destruction using live `FProperty` operations |
 | fixed native arrays (`array_dim > 1`) | rejected | descriptor-aware element addressing distinct from dynamic `TArray` |
 | UTF-8/ANSI string property variants | rejected | explicit encoding and Unreal-owned lifetime functions |
@@ -50,6 +50,10 @@ Lazy object references are advertised through `UnrealReflectionCapabilities.Lazy
 ## Deadzone: Rogue snapshot priorities
 
 The captured 1.4 JMAP currently contains 1,163 map properties, 586 soft-object properties, 380 interface properties, 369 weak-object properties, 194 sets, 26 optionals, and 5 lazy-object properties. No nested array was present in this snapshot, so nested arrays are transport-tested but not game-confirmed.
+
+`TMap` and `TSet` deliberately remain unsupported at runtime. RogueMod does not infer `FScriptMap`, `FScriptSet`, sparse-array, or hash layout from process memory. Their future transport must use the pinned RE-UE4SS container implementation (`FScriptMap`/`FScriptSet` helpers and property lifecycle operations) through a compiled native adapter; if that SDK layer is unavailable, the bridge rejects these property kinds before touching game memory.
+
+Interface reads, UFunction parameters, and hook replacement are covered by the automated native-ABI transport test through kind 22 (`FScriptInterface`). On 2026-08-27 the live probe verified interface reads and persistent writes on a real `ChooserColumnBool.InputValue` interface property: set (`SetInterfacePropertyByName`, the self-referential value implements the interface), clear (direct null write), and restore all round-tripped, every probe feature passed, and the game exited without a crash report, so interface references are game-confirmed including persistent writes.
 
 On 2026-08-25 the live probe verified `UNiagaraSystem.LargeWorldCoordinateTileUpdateMode` against the installed Deadzone Rogue build. It read an unset value, round-tripped unset, wrote and read a set enum value, restored the original unset state, and confirmed the restoration. Generated property and UFunction optional adapters are also covered by automated native-ABI tests; the current JMAP contains no real UFunction with optional parameters, so the UFunction path cannot yet be game-confirmed.
 
@@ -66,6 +70,14 @@ The installed UE4SS `VTableLayout.ini` maps the object getter and setters to the
 For the pinned game build, RogueMod resolves the actual `FObjectPtrProperty` getter and `SetObjectPtrPropertyValueUnchecked` implementation from the live property vtable. Before enabling object access, it validates structural machine-code signatures for both functions. The setter receives the required pointer-to-temporary argument and executes the engine's incremental-GC write barrier before committing the reference. A write is reread through the validated engine getter; if verification fails, the original value is restored through the same setter. A game update that changes either signature disables object access instead of calling an unrecognized virtual function.
 
 Generated strong object properties are writable. The same backend handles strong object/class values in temporary `ProcessEvent` parameter buffers, hook replacements, and equal-length object-array element replacement. Reads are converted immediately to serial-validated `UnrealObjectHandle` values. On 2026-08-26 the live probe swapped `AActor.Owner` between two transient actors, reread the replacement, restored null, destroyed both actors, ran every other reflection probe, and then exited the game without a crash report or a new crash artifact.
+
+## Interface references
+
+`FScriptInterface` is advertised through `UnrealReflectionCapabilities.InterfaceReferences`. The generated SDK emits a wrapper class for the target `UInterface` (a `UObject` subclass, so the generated class inherits the usual `UnrealObject` chain), and interface-typed properties and parameters use that wrapper. The transported value is the object implementing the interface; reads and writes go through the same object-handle rules as strong object references.
+
+A `FScriptInterface` is a 16-byte pair: a raw `UObject*` object pointer at +0 and an `IInterface*` interface pointer at +8. All 380 interface properties in the captured Deadzone JMAP are 16 bytes with `CPF_ZeroConstructor | CPF_IsPlainOldData | CPF_NoDestructor` and no `CPF_TObjectPtr`, so the object pointer is a plain pointer rather than a `TObjectPtr`. Reads copy the object pointer at +0 into a serial-validated handle. Writes into temporary `ProcessEvent` parameter buffers and hook replacement slots store the object pointer at +0 and zero the interface pointer at +8, because the engine lazily re-resolves the interface pointer from the object; this mirrors the temporary-slot rule that makes strong object parameters safe.
+
+Persistent interface-property writes are supported through the engine's own `KismetSystemLibrary.SetInterfacePropertyByName`. The engine finds the property by name and validates `UClass::ImplementsInterface` before assigning, so a value whose object does not implement the target interface is rejected rather than silently written; the bridge verifies the object pointer landed and returns a failure status otherwise. Null values are written directly by zeroing the `FScriptInterface` slot, because `SetInterfacePropertyByName` skips null objects in UE5; removing a reference is safe without a write barrier. On 2026-08-27 the live probe created an inert `ChooserColumnBool` and confirmed set, clear, and restore on its real `InputValue` interface property: the self-referential value (the object implements `ChooserParameterBool`) survived a write/read round-trip, null cleared, and the original was restored, with every probe feature completing and the game exiting cleanly.
 
 ## Object creation
 

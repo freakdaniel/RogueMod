@@ -91,7 +91,7 @@ internal static unsafe class NativeBootstrapTestCallbacks
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     internal static uint UnrealGetCapabilities() =>
         (1U << 0) | (1U << 1) | (1U << 2) | (1U << 3) | (1U << 4) | (1U << 5) | (1U << 6) | (1U << 7) | (1U << 8) | (1U << 9)
-        | (1U << 10) | (1U << 11) | (1U << 12);
+        | (1U << 10) | (1U << 11) | (1U << 12) | (1U << 13);
 
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     internal static ulong UnrealCreateObject(ulong classHandle, ulong outerHandle, char* objectName)
@@ -249,6 +249,11 @@ internal static unsafe class NativeBootstrapTestCallbacks
         if (new string(propertyName) == "SoftController" && propertyKind == 21)
         {
             *value = AllocateSoftObjectValue();
+            return 0;
+        }
+        if (new string(propertyName) == "Leader" && propertyKind == 22)
+        {
+            *value = new NativeUnrealValue { Kind = 22, Data = 0x0000_0007_0000_002A };
             return 0;
         }
         if (new string(propertyName) != "bShouldPerformFullTickWhenPaused")
@@ -487,6 +492,18 @@ internal static unsafe class NativeBootstrapTestCallbacks
                 return -5;
             }
             parameters[1].Value = AllocateLazyObjectValue();
+            return 0;
+        }
+        if (name == "TestInterfaceMarshalling")
+        {
+            if (parameterCount != 2 || parameters == null
+                || parameters[0].Kind != 22 || parameters[0].Flags != 1 || parameters[0].Offset != 0 || parameters[0].Size != 16
+                || parameters[0].Value.Data != 0x0000_0007_0000_002A
+                || parameters[1].Kind != 22 || parameters[1].Flags != 6 || parameters[1].Offset != 16 || parameters[1].Size != 16)
+            {
+                return -5;
+            }
+            parameters[1].Value = new NativeUnrealValue { Kind = 22, Data = 0x0000_0007_0000_002A };
             return 0;
         }
         if (name != "TestMarshalling" || parameterCount != 3 || parameters == null)

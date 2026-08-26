@@ -156,6 +156,10 @@ namespace RogueMod
             void* object,
             const wchar_t* property_name,
             const UnrealValue& value) const;
+        [[nodiscard]] std::int32_t assign_interface_object_property(
+            void* object,
+            const wchar_t* property_name,
+            const UnrealValue& value) const;
         [[nodiscard]] std::int32_t construct_soft_object_value(
             const wchar_t* path,
             void* destination) const;
