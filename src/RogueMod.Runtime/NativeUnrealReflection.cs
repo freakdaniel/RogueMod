@@ -20,6 +20,8 @@ internal sealed unsafe class NativeUnrealReflection(
     delegate* unmanaged[Cdecl]<char*, ulong*, uint, uint*, int> findAllOf,
     delegate* unmanaged[Cdecl]<char*, int, int, ulong, uint, NativeUnrealReflection.NativeUnrealParameter*, delegate* unmanaged[Cdecl]<ulong, ulong, int, uint, NativeUnrealReflection.NativeUnrealParameter*, int>, ulong, ulong*, int> registerHook,
     delegate* unmanaged[Cdecl]<ulong, int> unregisterHook,
+    delegate* unmanaged[Cdecl]<ulong, ulong, char*, ulong> createObject,
+    delegate* unmanaged[Cdecl]<ulong, ulong, float*, float*, ulong> spawnActor,
     Action<ModLogLevel, string> log) : IUnrealReflection
 {
     private const uint MaximumPathLength = 1_048_576;
@@ -28,6 +30,7 @@ internal sealed unsafe class NativeUnrealReflection(
     private const uint MaximumArrayLength = 1_048_576;
     private const uint MaximumObjectCount = 1_048_576;
     private const uint LazyObjectWireSize = 48;
+    private const uint SoftObjectWireSize = 56;
     private const int LazyObjectStorageSize = UnrealLazyObjectValue.NativeStorageSize;
     private const int ContainerValueKindShift = 8;
     private const uint MaximumEncodedValueKind = 0x00ff_ffff;
@@ -52,6 +55,58 @@ internal sealed unsafe class NativeUnrealReflection(
         fixed (char* classNamePointer = className)
         {
             return new(findFirstOf(classNamePointer));
+        }
+    }
+
+    public UnrealObjectHandle CreateObject(
+        UnrealObjectHandle classHandle,
+        UnrealObjectHandle outerHandle,
+        string? objectName = null)
+    {
+        if ((Capabilities & UnrealReflectionCapabilities.ObjectCreation) == 0 || createObject == null)
+        {
+            throw new NotSupportedException("The active RogueMod bridge does not support Unreal object creation.");
+        }
+        if (classHandle.IsNull || !IsValid(classHandle))
+        {
+            throw new InvalidOperationException("Cannot create an Unreal object from an invalid class handle.");
+        }
+        if (!outerHandle.IsNull && !IsValid(outerHandle))
+        {
+            throw new InvalidOperationException("Cannot create an Unreal object with an invalid outer handle.");
+        }
+
+        fixed (char* namePointer = objectName)
+        {
+            return new(createObject(classHandle.Value, outerHandle.Value, namePointer));
+        }
+    }
+
+    public UnrealObjectHandle SpawnActor(
+        UnrealObjectHandle contextObject,
+        UnrealObjectHandle classHandle,
+        UnrealVector location,
+        UnrealRotator rotation)
+    {
+        if ((Capabilities & UnrealReflectionCapabilities.ActorSpawning) == 0 || spawnActor == null)
+        {
+            throw new NotSupportedException("The active RogueMod bridge does not support Unreal actor spawning.");
+        }
+        if (contextObject.IsNull || !IsValid(contextObject))
+        {
+            throw new InvalidOperationException("Cannot spawn an actor from an invalid world-context object.");
+        }
+        if (classHandle.IsNull || !IsValid(classHandle))
+        {
+            throw new InvalidOperationException("Cannot spawn an actor from an invalid class handle.");
+        }
+
+        float[] locationBuffer = [location.X, location.Y, location.Z];
+        float[] rotationBuffer = [rotation.Pitch, rotation.Yaw, rotation.Roll];
+        fixed (float* locationPointer = locationBuffer)
+        fixed (float* rotationPointer = rotationBuffer)
+        {
+            return new(spawnActor(contextObject.Value, classHandle.Value, locationPointer, rotationPointer));
         }
     }
 
@@ -521,6 +576,7 @@ internal sealed unsafe class NativeUnrealReflection(
         object managedValue = kind switch
         {
             NativePropertyKind.LazyObject => ReadNativeLazyObject(nativeValue),
+            NativePropertyKind.SoftObject => ReadNativeSoftObject(nativeValue),
             NativePropertyKind.String or NativePropertyKind.Name or NativePropertyKind.Text => ReadNativeString(nativeValue),
             NativePropertyKind.Struct => ReadNativeStruct(nativeValue, RequireStructDescriptor(structDescriptor)),
             NativePropertyKind.Array => ReadNativeArray(nativeValue, RequireArrayDescriptor(arrayDescriptor)),
@@ -640,6 +696,10 @@ internal sealed unsafe class NativeUnrealReflection(
         if (kind == NativePropertyKind.LazyObject)
         {
             return WriteNativeLazyObject(encodedKind, value, allocations);
+        }
+        if (kind == NativePropertyKind.SoftObject)
+        {
+            return WriteNativeSoftObject(encodedKind, value, allocations);
         }
 
         var data = NativeScalarValueCodec.Encode(kind, managed);
@@ -818,6 +878,47 @@ internal sealed unsafe class NativeUnrealReflection(
             BinaryPrimitives.ReadUInt32LittleEndian(wire[40..]),
             BinaryPrimitives.ReadUInt32LittleEndian(wire[44..]));
         return new UnrealLazyObjectValue(objectId, cachedHandle, storage);
+    }
+
+    private static NativeUnrealValue WriteNativeSoftObject(
+        uint encodedKind,
+        UnrealValue value,
+        NativeAllocations allocations)
+    {
+        if (value.Value is not UnrealSoftObjectValue softValue)
+        {
+            throw new InvalidCastException(
+                $"An Unreal soft object reference requires an UnrealSoftObjectValue, not " +
+                $"'{value.Value?.GetType().FullName ?? "null"}'.");
+        }
+
+        var wire = new byte[SoftObjectWireSize];
+        softValue.CopyNativeStorage().CopyTo(wire, 0);
+        BinaryPrimitives.WriteUInt64LittleEndian(
+            wire.AsSpan(UnrealSoftObjectValue.NativeStorageSize),
+            softValue.CachedHandle.Value);
+        var wirePointer = allocations.AddBytes(wire);
+        var pathPointer = allocations.AddString(softValue.Path);
+        Marshal.WriteIntPtr(wirePointer, UnrealSoftObjectValue.NativeStorageSize + sizeof(ulong), pathPointer);
+        return new NativeUnrealValue
+        {
+            Kind = encodedKind,
+            Reserved = SoftObjectWireSize,
+            Data = unchecked((ulong)wirePointer)
+        };
+    }
+
+    private static UnrealSoftObjectValue ReadNativeSoftObject(NativeUnrealValue value)
+    {
+        if (value.Reserved != SoftObjectWireSize || value.Data == 0)
+        {
+            throw new InvalidOperationException("The native bridge returned an invalid soft object reference buffer.");
+        }
+
+        var wire = *(NativeSoftObjectWire*)value.Data;
+        var path = wire.Path == null ? string.Empty : new string(wire.Path);
+        var storage = new ReadOnlySpan<byte>(wire.Storage, UnrealSoftObjectValue.NativeStorageSize).ToArray();
+        return new UnrealSoftObjectValue(path, new UnrealObjectHandle(wire.CachedHandle), storage);
     }
 
     private static NativeUnrealValue WriteNativeOptional(
@@ -1023,6 +1124,11 @@ internal sealed unsafe class NativeUnrealReflection(
             && (Capabilities & UnrealReflectionCapabilities.LazyObjectReferences) == 0)
         {
             throw new NotSupportedException("The active RogueMod bridge does not support lazy UObject references.");
+        }
+        if (kind == NativePropertyKind.SoftObject
+            && (Capabilities & UnrealReflectionCapabilities.SoftObjectReferences) == 0)
+        {
+            throw new NotSupportedException("The active RogueMod bridge does not support soft object references.");
         }
     }
 
@@ -1246,6 +1352,16 @@ internal sealed unsafe class NativeUnrealReflection(
             Marshal.FreeCoTaskMem(unchecked((nint)value.Data));
             return;
         }
+        if (kind == NativePropertyKind.SoftObject)
+        {
+            var wire = *(NativeSoftObjectWire*)value.Data;
+            if (wire.Path != null)
+            {
+                Marshal.FreeCoTaskMem((nint)wire.Path);
+            }
+            Marshal.FreeCoTaskMem(unchecked((nint)value.Data));
+            return;
+        }
         if (kind is not (NativePropertyKind.String
             or NativePropertyKind.Name
             or NativePropertyKind.Text
@@ -1341,6 +1457,14 @@ internal sealed unsafe class NativeUnrealReflection(
         internal uint Kind;
         internal uint Reserved;
         internal ulong Data;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct NativeSoftObjectWire
+    {
+        internal fixed byte Storage[UnrealSoftObjectValue.NativeStorageSize];
+        internal ulong CachedHandle;
+        internal char* Path;
     }
 
     internal struct NativeUnrealParameter

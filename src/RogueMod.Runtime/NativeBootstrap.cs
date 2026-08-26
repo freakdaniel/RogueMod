@@ -56,6 +56,8 @@ public static unsafe class NativeBootstrap
                 candidate.UnrealFindAllOf,
                 candidate.UnrealRegisterHook,
                 candidate.UnrealUnregisterHook,
+                candidate.UnrealCreateObject,
+                candidate.UnrealSpawnActor,
                 Log);
             _coordinator = new ManagedRuntimeCoordinator(gameModsRoot, gameProfileId, unreal, Log);
             _coordinator.LoadAsync().AsTask().GetAwaiter().GetResult();
@@ -165,5 +167,7 @@ public static unsafe class NativeBootstrap
         public readonly delegate* unmanaged[Cdecl]<char*, ulong*, uint, uint*, int> UnrealFindAllOf;
         public readonly delegate* unmanaged[Cdecl]<char*, int, int, ulong, uint, NativeUnrealReflection.NativeUnrealParameter*, delegate* unmanaged[Cdecl]<ulong, ulong, int, uint, NativeUnrealReflection.NativeUnrealParameter*, int>, ulong, ulong*, int> UnrealRegisterHook;
         public readonly delegate* unmanaged[Cdecl]<ulong, int> UnrealUnregisterHook;
+        public readonly delegate* unmanaged[Cdecl]<ulong, ulong, char*, ulong> UnrealCreateObject;
+        public readonly delegate* unmanaged[Cdecl]<ulong, ulong, float*, float*, ulong> UnrealSpawnActor;
     }
 }

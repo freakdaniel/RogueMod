@@ -106,6 +106,8 @@ public sealed class RogueModTests
             null,
             &NativeHookTestCallbacks.Register,
             &NativeHookTestCallbacks.Unregister,
+            null,
+            null,
             (_, _) => { });
         var function = new UnrealFunctionDescriptor(
             "/Script/Test.HookOwner",
@@ -178,6 +180,8 @@ public sealed class RogueModTests
             null,
             &NativeHookTestCallbacks.Register,
             &NativeHookTestCallbacks.Unregister,
+            null,
+            null,
             (_, _) => { });
 
         var stringFunction = new UnrealFunctionDescriptor(
@@ -614,7 +618,7 @@ public sealed class RogueModTests
     static unsafe void NativeBootstrapValidatesAbi()
     {
         using var directory = new TemporaryDirectory();
-        Assert(sizeof(NativeBootstrapTestCallbacks.HostApi) == 144, "Managed ABI 13 host table has an unexpected size.");
+        Assert(sizeof(NativeBootstrapTestCallbacks.HostApi) == 160, "Managed ABI 13 host table has an unexpected size.");
         Assert(sizeof(NativeBootstrapTestCallbacks.NativeUnrealParameter) == 40, "Managed ABI 13 parameter has an unexpected size.");
         NativeBootstrapTestCallbacks.Messages.Clear();
         NativeBootstrapTestCallbacks.PropertyWritten = false;
@@ -662,9 +666,10 @@ public sealed class RogueModTests
                 GameModsRoot = modsRootPointer,
                 UnrealFindAllOf = &NativeBootstrapTestCallbacks.UnrealFindAllOf,
                 UnrealRegisterHook = &NativeBootstrapTestCallbacks.UnrealRegisterHook,
-                UnrealUnregisterHook = &NativeBootstrapTestCallbacks.UnrealUnregisterHook
+                UnrealUnregisterHook = &NativeBootstrapTestCallbacks.UnrealUnregisterHook,
+                UnrealCreateObject = null,
+                UnrealSpawnActor = null
             };
-
             delegate* unmanaged[Cdecl]<nint, int> initialize = &NativeBootstrap.Initialize;
             delegate* unmanaged[Cdecl]<int, int> dispatchGameEvent = &NativeBootstrap.DispatchGameEvent;
             delegate* unmanaged[Cdecl]<int> shutdown = &NativeBootstrap.Shutdown;

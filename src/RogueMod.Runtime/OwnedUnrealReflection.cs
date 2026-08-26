@@ -27,6 +27,17 @@ internal sealed class OwnedUnrealReflection(IUnrealReflection inner) : IUnrealRe
         UnrealFunctionDescriptor function,
         IReadOnlyList<UnrealArgument> arguments) => inner.Invoke(handle, function, arguments);
 
+    public UnrealObjectHandle CreateObject(
+        UnrealObjectHandle classHandle,
+        UnrealObjectHandle outerHandle,
+        string? objectName = null) => inner.CreateObject(classHandle, outerHandle, objectName);
+
+    public UnrealObjectHandle SpawnActor(
+        UnrealObjectHandle contextObject,
+        UnrealObjectHandle classHandle,
+        UnrealVector location,
+        UnrealRotator rotation) => inner.SpawnActor(contextObject, classHandle, location, rotation);
+
     public IDisposable RegisterHook(
         UnrealFunctionDescriptor function,
         UnrealHookPhase phase,

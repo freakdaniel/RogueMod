@@ -31,6 +31,7 @@ internal static class NativeReflectionTypeRegistry
             "ObjectProperty" or "ClassProperty" => NativePropertyKind.Object,
             "WeakObjectProperty" when size == 8 => NativePropertyKind.WeakObject,
             "LazyObjectProperty" when size == UnrealLazyObjectValue.NativeStorageSize => NativePropertyKind.LazyObject,
+            "SoftObjectProperty" when size == UnrealSoftObjectValue.NativeStorageSize => NativePropertyKind.SoftObject,
             "StrProperty" when size == 16 => NativePropertyKind.String,
             "NameProperty" when size == 8 => NativePropertyKind.Name,
             "TextProperty" when size == 16 => NativePropertyKind.Text,
@@ -153,7 +154,8 @@ internal enum NativePropertyKind : uint
     Array = 17,
     Optional = 18,
     WeakObject = 19,
-    LazyObject = 20
+    LazyObject = 20,
+    SoftObject = 21
 }
 
 internal enum StructFieldKind

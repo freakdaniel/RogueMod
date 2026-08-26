@@ -10,13 +10,16 @@
 #include <Windows.h>
 
 #include "RogueModHostApi.hpp"
+#include "UnrealMutationBackend.hpp"
 
 namespace RogueMod
 {
     class UnrealReflectionApi
     {
       public:
-        bool resolve(HMODULE ue4ss_module);
+        bool resolve(
+            HMODULE ue4ss_module,
+            void(__cdecl* log)(std::int32_t level, const wchar_t* message) = nullptr);
         void set_ready(bool ready);
 
         [[nodiscard]] bool is_available() const;
@@ -63,6 +66,15 @@ namespace RogueMod
             std::uint64_t context,
             std::uint64_t* token);
         [[nodiscard]] std::int32_t unregister_hook(std::uint64_t token);
+        [[nodiscard]] std::uint64_t create_object(
+            std::uint64_t class_handle,
+            std::uint64_t outer_handle,
+            const wchar_t* object_name) const;
+        [[nodiscard]] std::uint64_t spawn_actor(
+            std::uint64_t context_object_handle,
+            std::uint64_t class_handle,
+            const float* location,
+            const float* rotation) const;
 
       private:
         using find_first_of_fn = void*(__cdecl*)(const wchar_t*);
@@ -93,9 +105,6 @@ namespace RogueMod
         using fstring_copy_assignment_fn = void*(__cdecl*)(void*, const void*);
         using fname_default_constructor_fn = void*(__cdecl*)(void*);
         using fname_constructor_fn = void*(__cdecl*)(void*, const wchar_t*, std::int32_t, void*);
-        // MSVC keeps `this` in RCX and passes the hidden std::wstring return storage in RDX
-        // for this member function. Declaring it as a free function returning std::wstring
-        // reverses those registers under the Windows x64 ABI.
         using fname_to_string_fn = void(__cdecl*)(const void*, std::wstring*);
         using fname_copy_assignment_fn = void*(__cdecl*)(void*, const void*);
         using ftext_default_constructor_fn = void*(__cdecl*)(void*);
@@ -116,8 +125,19 @@ namespace RogueMod
         using fweak_object_assign_fn = void(__cdecl*)(void*, const void*);
         using fweak_object_reset_fn = void(__cdecl*)(void*);
         using lazy_object_set_value_fn = void(__cdecl*)(void*, const void*);
+        using typed_object_set_value_fn = void(__cdecl*)(void*, const void*);
         using fmemory_malloc_fn = void*(__cdecl*)(std::size_t, std::uint32_t);
         using fmemory_free_fn = void(__cdecl*)(void*);
+using initialize_property_value_fn = void(__cdecl*)(const void*, void*);
+        using destroy_property_value_fn = void(__cdecl*)(const void*, void*);
+        using construct_object_parameters_ctor_fn = void(__cdecl*)(void* self, const void* uclass, void* outer);
+        using static_construct_object_fn = void*(__cdecl*)(const void* parameters);
+        using object_get_world_fn = void*(__cdecl*)(const void* self);
+        using world_spawn_actor_fn = void*(__cdecl*)(
+            void* self,
+            const void* uclass,
+            const void* location,
+            const void* rotation);
 
         [[nodiscard]] std::uint64_t make_handle(const void* object) const;
         [[nodiscard]] const void* resolve_handle(std::uint64_t handle) const;
@@ -126,7 +146,10 @@ namespace RogueMod
             const void* address,
             std::uint32_t encoded_kind,
             UnrealValue& value) const;
-        [[nodiscard]] bool assign_typed_value(
+        /// Writes one marshalled value through its live property. Returns 0 on success or a
+        /// negative native status: -4 generic rejection, -7 object setter rejected the
+        /// write, -8 the previous value changed and could not be restored.
+        [[nodiscard]] std::int32_t assign_typed_value(
             void* property,
             void* address,
             std::uint32_t encoded_kind,
@@ -206,7 +229,16 @@ namespace RogueMod
         fweak_object_assign_fn m_fweak_object_assign{};
         fweak_object_reset_fn m_fweak_object_reset{};
         lazy_object_set_value_fn m_lazy_object_set_value{};
+        typed_object_set_value_fn m_typed_object_set_value{};
         fmemory_malloc_fn m_fmemory_malloc{};
         fmemory_free_fn m_fmemory_free{};
+initialize_property_value_fn m_initialize_property_value{};
+        destroy_property_value_fn m_destroy_property_value{};
+        construct_object_parameters_ctor_fn m_construct_object_parameters_ctor{};
+        static_construct_object_fn m_static_construct_object{};
+        object_get_world_fn m_object_get_world{};
+        world_spawn_actor_fn m_world_spawn_actor{};
+        void(__cdecl* m_log)(std::int32_t level, const wchar_t* message){};
+        UnrealMutationBackend m_mutation_backend;
     };
 }

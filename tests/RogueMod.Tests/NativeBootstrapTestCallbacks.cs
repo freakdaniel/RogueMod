@@ -659,6 +659,8 @@ internal static unsafe class NativeBootstrapTestCallbacks
         internal delegate* unmanaged[Cdecl]<char*, ulong*, uint, uint*, int> UnrealFindAllOf;
         internal delegate* unmanaged[Cdecl]<char*, int, int, ulong, uint, NativeUnrealParameter*, delegate* unmanaged[Cdecl]<ulong, ulong, int, uint, NativeUnrealParameter*, int>, ulong, ulong*, int> UnrealRegisterHook;
         internal delegate* unmanaged[Cdecl]<ulong, int> UnrealUnregisterHook;
+        internal delegate* unmanaged[Cdecl]<ulong, ulong, char*, ulong> UnrealCreateObject;
+        internal delegate* unmanaged[Cdecl]<ulong, ulong, float*, float*, ulong> UnrealSpawnActor;
     }
 
     internal struct NativeUnrealValue

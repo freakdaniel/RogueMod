@@ -38,6 +38,7 @@ namespace RogueMod
         Optional = 18,
         WeakObject = 19,
         LazyObject = 20,
+        SoftObject = 21,
     };
 
     struct UnrealValue
@@ -136,7 +137,16 @@ namespace RogueMod
             std::uint64_t context,
             std::uint64_t* token);
         std::int32_t(__cdecl* unreal_unregister_hook)(std::uint64_t token);
+        std::uint64_t(__cdecl* unreal_create_object)(
+            std::uint64_t class_handle,
+            std::uint64_t outer_handle,
+            const wchar_t* object_name);
+        std::uint64_t(__cdecl* unreal_spawn_actor)(
+            std::uint64_t context_object_handle,
+            std::uint64_t class_handle,
+            const float* location,
+            const float* rotation);
     };
 
-    static_assert(sizeof(HostApi) == 144, "RogueMod host ABI changed unexpectedly.");
+    static_assert(sizeof(HostApi) == 160, "RogueMod host ABI changed unexpectedly.");
 }

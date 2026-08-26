@@ -1,4 +1,5 @@
 #include <cstdint>
+#include <cstdio>
 #include <cwchar>
 #include <filesystem>
 #include <mutex>
@@ -68,11 +69,38 @@ namespace
         }
     }
 
+    std::wstring format_timestamp()
+    {
+        SYSTEMTIME time{};
+        GetLocalTime(&time);
+        wchar_t buffer[32]{};
+        swprintf_s(
+            buffer,
+            L"%04u-%02u-%02u %02u:%02u:%02u.%03u",
+            time.wYear,
+            time.wMonth,
+            time.wDay,
+            time.wHour,
+            time.wMinute,
+            time.wSecond,
+            time.wMilliseconds);
+        return buffer;
+    }
+
+    std::wstring padded_log_level_name(std::int32_t level)
+    {
+        std::wstring name = log_level_name(level);
+        name.resize(8, L' ');
+        return name;
+    }
+
     void write_log(std::int32_t level, const wchar_t* message)
     {
         const auto* safe_message = message == nullptr ? L"<null>" : message;
         std::wstring line = L"[";
-        line += log_level_name(level);
+        line += format_timestamp();
+        line += L"] [";
+        line += padded_log_level_name(level);
         line += L"] ";
         line += safe_message;
         line += L"\r\n";
@@ -131,6 +159,23 @@ namespace
     std::uint64_t __cdecl unreal_find_first_of(const wchar_t* class_name)
     {
         return UnrealReflection.find_first_of(class_name);
+    }
+
+    std::uint64_t __cdecl unreal_create_object(
+        std::uint64_t class_handle,
+        std::uint64_t outer_handle,
+        const wchar_t* object_name)
+    {
+        return UnrealReflection.create_object(class_handle, outer_handle, object_name);
+    }
+
+    std::uint64_t __cdecl unreal_spawn_actor(
+        std::uint64_t context_object_handle,
+        std::uint64_t class_handle,
+        const float* location,
+        const float* rotation)
+    {
+        return UnrealReflection.spawn_actor(context_object_handle, class_handle, location, rotation);
     }
 
     std::int32_t __cdecl unreal_find_all_of(
@@ -403,7 +448,9 @@ namespace
                 game_mods_root.c_str(),
                 &unreal_find_all_of,
                 &unreal_register_hook,
-                &unreal_unregister_hook};
+                &unreal_unregister_hook,
+                &unreal_create_object,
+                &unreal_spawn_actor};
             log_bridge(1, L"Calling managed Initialize entry point.");
             result = initialize(&api);
             log_result(L"managed Initialize", result);
@@ -486,7 +533,7 @@ namespace
             LogPath = roguemod_root / L"RogueMod.log";
             log_bridge(2, L"Starting RogueMod managed runtime.");
             const auto ue4ss_module = GetModuleHandleW(L"UE4SS.dll");
-            if (UnrealReflection.resolve(ue4ss_module))
+            if (UnrealReflection.resolve(ue4ss_module, write_log))
             {
                 log_bridge(2, L"Resolved UE4SS reflection exports.");
             }

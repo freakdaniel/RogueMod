@@ -6,6 +6,50 @@ namespace RogueMod.Tests.Live;
 public sealed class DeadzoneLiveReflectionProbe : IRogueMod, IRogueModGameEvents
 {
     private const int MaximumUpdateAttempts = 1_800;
+    private const string NameArrayMarker = "RogueModLiveProbe";
+    private static readonly UnrealArrayDescriptor ActorTagsValue = new("NameProperty", 8);
+    private static readonly UnrealPropertyDescriptor ActorTagsProperty = new(
+        "/Script/Engine.Actor",
+        "Tags",
+        "ArrayProperty",
+        480,
+        1,
+        "CPF_Edit | CPF_BlueprintVisible | CPF_ZeroConstructor | CPF_AdvancedDisplay | CPF_NativeAccessSpecifierPublic",
+        16)
+    {
+        Array = ActorTagsValue
+    };
+
+    private static readonly (string OwnerPath, UnrealPropertyDescriptor Property, string AlternatePath)[] ObjectPtrCandidates =
+    [
+        ("/Script/AIModule.Default__AIController", new(
+            "/Script/AIModule.AIController",
+            "BrainComponent",
+            "ObjectProperty:/Script/AIModule.BrainComponent",
+            912,
+            1,
+            "CPF_BlueprintVisible | CPF_ExportObject | CPF_ZeroConstructor | CPF_InstancedReference | CPF_NoDestructor | CPF_UObjectWrapper | CPF_HasGetValueTypeHash | CPF_NativeAccessSpecifierPublic | CPF_TObjectPtr",
+            8),
+            "/Script/AIModule.Default__BrainComponent"),
+        ("/Script/AIModule.Default__AIController", new(
+            "/Script/AIModule.AIController",
+            "PathFollowingComponent",
+            "ObjectProperty:/Script/AIModule.PathFollowingComponent",
+            904,
+            1,
+            "CPF_Edit | CPF_ExportObject | CPF_ZeroConstructor | CPF_DisableEditOnInstance | CPF_EditConst | CPF_InstancedReference | CPF_NoDestructor | CPF_UObjectWrapper | CPF_HasGetValueTypeHash | CPF_NativeAccessSpecifierPrivate | CPF_TObjectPtr",
+            8),
+            "/Script/AIModule.Default__PathFollowingComponent"),
+        ("/Script/AIModule.Default__AIController", new(
+            "/Script/AIModule.AIController",
+            "PerceptionComponent",
+            "ObjectProperty:/Script/AIModule.AIPerceptionComponent",
+            920,
+            1,
+            "CPF_Edit | CPF_ExportObject | CPF_ZeroConstructor | CPF_DisableEditOnInstance | CPF_EditConst | CPF_InstancedReference | CPF_NoDestructor | CPF_UObjectWrapper | CPF_HasGetValueTypeHash | CPF_NativeAccessSpecifierPublic | CPF_TObjectPtr",
+            8),
+            "/Script/AIModule.Default__AIPerceptionComponent"),
+    ];
     private static readonly UnrealOptionalDescriptor TileUpdateModeValue = new(
         "EnumProperty:/Script/Niagara.ENiagaraLwcTileUpdateMode",
         1);
@@ -56,11 +100,30 @@ public sealed class DeadzoneLiveReflectionProbe : IRogueMod, IRogueModGameEvents
             24))
     ];
 
+    private static readonly UnrealPropertyDescriptor LevelStreamingWorldAssetProperty = new(
+        "/Script/Engine.LevelStreaming",
+        "WorldAsset",
+        "SoftObjectProperty:/Script/Engine.World",
+        40,
+        1,
+        "CPF_Edit | CPF_BlueprintVisible | CPF_BlueprintReadOnly | CPF_EditConst | CPF_Protected | CPF_UObjectWrapper | CPF_HasGetValueTypeHash | CPF_NativeAccessSpecifierProtected",
+        40);
+
     private IModContext? context;
     private int updateAttempts;
     private bool optionalCompleted;
     private bool weakCompleted;
     private bool lazyCompleted;
+    private bool nameArrayCompleted;
+    private bool nameArrayFailureLogged;
+    private bool objectPtrCompleted;
+    private bool objectPtrFailureLogged;
+    private bool objectCreationCompleted;
+    private bool objectCreationFailureLogged;
+    private bool actorSpawnCompleted;
+    private bool actorSpawnFailureLogged;
+    private bool softObjectCompleted;
+    private bool softObjectFailureLogged;
 
     public ValueTask LoadAsync(IModContext modContext, CancellationToken cancellationToken = default)
     {
@@ -69,6 +132,11 @@ public sealed class DeadzoneLiveReflectionProbe : IRogueMod, IRogueModGameEvents
         TryVerifyOptional();
         TryVerifyWeakReference();
         TryVerifyLazyReference();
+        TryVerifyNameArrayResize();
+        TryVerifyObjectPtr();
+        TryVerifyObjectCreation();
+        TryVerifyActorSpawn();
+        TryVerifySoftObject();
         return ValueTask.CompletedTask;
     }
 
@@ -80,7 +148,8 @@ public sealed class DeadzoneLiveReflectionProbe : IRogueMod, IRogueModGameEvents
 
     public void OnGameEvent(ModGameEventKind eventKind)
     {
-        if ((optionalCompleted && weakCompleted && lazyCompleted) || context is null)
+        if ((optionalCompleted && weakCompleted && lazyCompleted && nameArrayCompleted && objectPtrCompleted && objectCreationCompleted && actorSpawnCompleted && softObjectCompleted)
+            || context is null)
         {
             return;
         }
@@ -89,12 +158,22 @@ public sealed class DeadzoneLiveReflectionProbe : IRogueMod, IRogueModGameEvents
             TryVerifyOptional();
             TryVerifyWeakReference();
             TryVerifyLazyReference();
+            TryVerifyNameArrayResize();
+            TryVerifyObjectPtr();
+            TryVerifyObjectCreation();
+            TryVerifyActorSpawn();
+            TryVerifySoftObject();
             return;
         }
         if (eventKind == ModGameEventKind.Update && ++updateAttempts <= MaximumUpdateAttempts)
         {
             TryVerifyOptional();
             TryVerifyWeakReference();
+            TryVerifyNameArrayResize();
+            TryVerifyObjectPtr();
+            TryVerifyObjectCreation();
+            TryVerifyActorSpawn();
+            TryVerifySoftObject();
             if (updateAttempts % 300 == 0)
             {
                 TryVerifyLazyReference();
@@ -114,8 +193,397 @@ public sealed class DeadzoneLiveReflectionProbe : IRogueMod, IRogueModGameEvents
             {
                 context.Logger.Log(ModLogLevel.Error, "LIVE-LAZY FAIL: no real lazy property completed pending/null/restore verification");
             }
+            if (!nameArrayCompleted)
+            {
+                context.Logger.Log(ModLogLevel.Error, "LIVE-NAME-ARRAY FAIL: no Actor.Tags resize/restore round-trip completed");
+            }
+            if (!objectPtrCompleted)
+            {
+                context.Logger.Log(ModLogLevel.Error, "LIVE-TOBJECTPTR FAIL: no CPF_TObjectPtr CDO swap/restore round-trip completed");
+            }
+            if (!objectCreationCompleted)
+            {
+                context.Logger.Log(ModLogLevel.Error, "LIVE-CREATE FAIL: no object creation round-trip completed");
+            }
+            if (!actorSpawnCompleted)
+            {
+                context.Logger.Log(ModLogLevel.Error, "LIVE-SPAWN FAIL: no actor spawn round-trip completed");
+            }
+            if (!softObjectCompleted)
+            {
+                context.Logger.Log(ModLogLevel.Error, "LIVE-SOFT FAIL: no soft object reference round-trip completed");
+            }
         }
     }
+
+    private void TryVerifySoftObject()
+    {
+        if (softObjectCompleted
+            || context is null
+            || !context.Unreal.IsAvailable
+            || (context.Unreal.Capabilities & UnrealReflectionCapabilities.SoftObjectReferences) == 0)
+        {
+            return;
+        }
+
+        var owner = context.Unreal.FindFirstOf("/Script/Engine.Default__LevelStreaming");
+        if (owner.IsNull || !context.Unreal.IsValid(owner))
+        {
+            return;
+        }
+
+        try
+        {
+            var unreal = context.Unreal;
+            var original = ReadSoftObject(unreal, owner);
+            var marker = new UnrealSoftObjectValue(
+                "/Game/Test/RogueModLiveProbe.RogueModLiveProbe",
+                UnrealObjectHandle.Null,
+                original.CopyNativeStorage());
+            try
+            {
+                unreal.WriteProperty(owner, LevelStreamingWorldAssetProperty, UnrealValue.From(marker));
+                var written = ReadSoftObject(unreal, owner);
+                if (!StringComparer.Ordinal.Equals(written.Path, marker.Path))
+                {
+                    throw new InvalidOperationException($"soft path did not survive a write/read round-trip: '{written.Path}'");
+                }
+            }
+            finally
+            {
+                unreal.WriteProperty(owner, LevelStreamingWorldAssetProperty, UnrealValue.From(original));
+            }
+
+            var restored = ReadSoftObject(unreal, owner);
+            if (!StringComparer.Ordinal.Equals(restored.Path, original.Path))
+            {
+                throw new InvalidOperationException($"original soft path was not restored: '{restored.Path}'");
+            }
+
+            softObjectCompleted = true;
+            context.Logger.Log(
+                ModLogLevel.Information,
+                $"LIVE-SOFT PASS: {unreal.GetPathName(owner)} original='{original.Path}' marker='{marker.Path}' write=ok restore=ok");
+        }
+        catch (Exception exception)
+        {
+            if (!softObjectFailureLogged)
+            {
+                context.Logger.Log(ModLogLevel.Debug, $"LIVE-SOFT rejected: {exception.Message}");
+                softObjectFailureLogged = true;
+            }
+        }
+    }
+
+    private static UnrealSoftObjectValue ReadSoftObject(IUnrealReflection unreal, UnrealObjectHandle owner) =>
+        unreal.ReadProperty(owner, LevelStreamingWorldAssetProperty).As<UnrealSoftObjectValue>();
+
+    private void TryVerifyActorSpawn()
+    {
+        if (actorSpawnCompleted
+            || context is null
+            || !context.Unreal.IsAvailable
+            || (context.Unreal.Capabilities & UnrealReflectionCapabilities.ActorSpawning) == 0)
+        {
+            return;
+        }
+
+        UnrealObjectHandle contextObject = default;
+        foreach (var handle in context.Unreal.FindAllOf("PlayerController"))
+        {
+            if (context.Unreal.IsValid(handle))
+            {
+                contextObject = handle;
+                break;
+            }
+        }
+        if (contextObject.IsNull)
+        {
+            return;
+        }
+
+        var classHandle = context.Unreal.FindFirstOf("/Script/Engine.Actor");
+        if (classHandle.IsNull || !context.Unreal.IsValid(classHandle))
+        {
+            return;
+        }
+
+        try
+        {
+            var spawned = context.Unreal.SpawnActor(
+                contextObject,
+                classHandle,
+                new UnrealVector(0f, 0f, 0f),
+                UnrealRotator.Zero);
+            if (spawned.IsNull || !context.Unreal.IsValid(spawned))
+            {
+                throw new InvalidOperationException("spawned actor is null or stale");
+            }
+            var spawnedClass = context.Unreal.GetClass(spawned);
+            if (spawnedClass != classHandle)
+            {
+                throw new InvalidOperationException("spawned actor has the wrong class");
+            }
+            var path = context.Unreal.GetPathName(spawned);
+            if (path is null)
+            {
+                throw new InvalidOperationException("spawned actor has no path");
+            }
+            actorSpawnCompleted = true;
+            context.Logger.Log(
+                ModLogLevel.Information,
+                $"LIVE-SPAWN PASS: {path} class={context.Unreal.GetPathName(spawnedClass)} valid=ok");
+        }
+        catch (Exception exception)
+        {
+            if (!actorSpawnFailureLogged)
+            {
+                context.Logger.Log(ModLogLevel.Debug, $"LIVE-SPAWN rejected: {exception.Message}");
+                actorSpawnFailureLogged = true;
+            }
+        }
+    }
+
+    private void TryVerifyObjectCreation()
+    {
+        if (objectCreationCompleted
+            || context is null
+            || !context.Unreal.IsAvailable
+            || (context.Unreal.Capabilities & UnrealReflectionCapabilities.ObjectCreation) == 0)
+        {
+            return;
+        }
+
+        var classHandle = context.Unreal.FindFirstOf("/Script/Engine.SceneComponent");
+        if (classHandle.IsNull || !context.Unreal.IsValid(classHandle))
+        {
+            return;
+        }
+        var outer = context.Unreal.FindFirstOf("/Script/AIModule.Default__AIController");
+        if (outer.IsNull || !context.Unreal.IsValid(outer))
+        {
+            return;
+        }
+
+        try
+        {
+            var created = context.Unreal.CreateObject(classHandle, outer, "RogueModLiveProbe");
+            if (created.IsNull || !context.Unreal.IsValid(created))
+            {
+                throw new InvalidOperationException("created object is null or stale");
+            }
+            var createdClass = context.Unreal.GetClass(created);
+            if (createdClass != classHandle)
+            {
+                throw new InvalidOperationException("created object has the wrong class");
+            }
+            var path = context.Unreal.GetPathName(created);
+            if (path is null || !path.Contains("RogueModLiveProbe", StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException($"created object path does not carry the requested name: {path ?? "<null>"}");
+            }
+            objectCreationCompleted = true;
+            context.Logger.Log(
+                ModLogLevel.Information,
+                $"LIVE-CREATE PASS: {path} class={context.Unreal.GetPathName(createdClass)} valid=ok name=ok");
+        }
+        catch (Exception exception)
+        {
+            if (!objectCreationFailureLogged)
+            {
+                context.Logger.Log(ModLogLevel.Debug, $"LIVE-CREATE rejected: {exception.Message}");
+                objectCreationFailureLogged = true;
+            }
+        }
+    }
+
+    private void TryVerifyObjectPtr()
+    {
+        if (objectPtrCompleted || context is null || !context.Unreal.IsAvailable)
+        {
+            return;
+        }
+
+        foreach (var candidate in ObjectPtrCandidates)
+        {
+            var owner = context.Unreal.FindFirstOf(candidate.OwnerPath);
+            if (owner.IsNull || !context.Unreal.IsValid(owner))
+            {
+                continue;
+            }
+            var alternate = context.Unreal.FindFirstOf(candidate.AlternatePath);
+            if (alternate.IsNull || !context.Unreal.IsValid(alternate))
+            {
+                continue;
+            }
+            if (TryVerifyObjectPtrCandidate(owner, candidate.Property, alternate, out var failure))
+            {
+                objectPtrCompleted = true;
+                return;
+            }
+            if (!objectPtrFailureLogged)
+            {
+                context.Logger.Log(
+                    ModLogLevel.Debug,
+                    $"LIVE-TOBJECTPTR candidate rejected: {candidate.OwnerPath}:{candidate.Property.Name}: {failure}");
+                objectPtrFailureLogged = true;
+            }
+        }
+    }
+
+    private bool TryVerifyObjectPtrCandidate(
+        UnrealObjectHandle owner,
+        UnrealPropertyDescriptor property,
+        UnrealObjectHandle alternate,
+        out string? failure)
+    {
+        try
+        {
+            VerifyObjectPtrSwapRoundTrip(owner, property, alternate);
+            failure = null;
+            return true;
+        }
+        catch (Exception exception)
+        {
+            failure = exception.Message;
+            return false;
+        }
+    }
+
+    private void VerifyObjectPtrSwapRoundTrip(
+        UnrealObjectHandle owner,
+        UnrealPropertyDescriptor property,
+        UnrealObjectHandle alternate)
+    {
+        var unreal = context!.Unreal;
+        var original = unreal.ReadProperty(owner, property).AsObjectHandle();
+        if (original == alternate || (!original.IsNull && !unreal.IsValid(original)))
+        {
+            throw new InvalidOperationException("property is stale or already equals the alternate target");
+        }
+
+        try
+        {
+            unreal.WriteProperty(owner, property, UnrealValue.From(alternate));
+            var swapped = unreal.ReadProperty(owner, property).AsObjectHandle();
+            if (swapped != alternate)
+            {
+                throw new InvalidOperationException(
+                    $"write did not replace the value: expected={DescribeHandle(unreal, alternate)} " +
+                    $"actual={DescribeHandle(unreal, swapped)}");
+            }
+        }
+        finally
+        {
+            unreal.WriteProperty(owner, property, UnrealValue.From(original));
+        }
+
+        var restored = unreal.ReadProperty(owner, property).AsObjectHandle();
+        if (restored != original || (!restored.IsNull && !unreal.IsValid(restored)))
+        {
+            throw new InvalidOperationException("original TObjectPtr value was not restored");
+        }
+
+        context.Logger.Log(
+            ModLogLevel.Information,
+            $"LIVE-TOBJECTPTR PASS: {unreal.GetPathName(owner)} property={property.Name} " +
+            $"original={DescribeHandle(unreal, restored)} swap={DescribeHandle(unreal, alternate)} swap=ok restore=ok");
+    }
+
+    private static string DescribeHandle(IUnrealReflection unreal, UnrealObjectHandle handle) =>
+        handle.IsNull ? "<null>" : unreal.GetPathName(handle) ?? "<stale>";
+
+    private void TryVerifyNameArrayResize()
+    {
+        if (nameArrayCompleted || context is null || !context.Unreal.IsAvailable)
+        {
+            return;
+        }
+
+        IReadOnlyList<UnrealObjectHandle> handles;
+        try
+        {
+            handles = context.Unreal.FindAllOf("PlayerController");
+        }
+        catch (InvalidOperationException exception)
+        {
+            // UObject enumeration can change during a frame. Leave the callback enabled
+            // and retry on the next update.
+            context.Logger.Log(ModLogLevel.Debug, $"LIVE-NAME-ARRAY enumeration deferred: {exception.Message}");
+            return;
+        }
+
+        foreach (var handle in handles)
+        {
+            if (!context.Unreal.IsValid(handle))
+            {
+                continue;
+            }
+            try
+            {
+                VerifyNameArrayResizeRoundTrip(handle);
+                nameArrayCompleted = true;
+                return;
+            }
+            catch (Exception exception)
+            {
+                if (!nameArrayFailureLogged)
+                {
+                    context.Logger.Log(
+                        ModLogLevel.Debug,
+                        $"LIVE-NAME-ARRAY candidate rejected: {context.Unreal.GetPathName(handle)}: {exception.Message}");
+                    nameArrayFailureLogged = true;
+                }
+            }
+        }
+    }
+
+    private void VerifyNameArrayResizeRoundTrip(UnrealObjectHandle owner)
+    {
+        var unreal = context!.Unreal;
+        var original = ReadNameArray(unreal, owner);
+        var replacement = original.Append(NameArrayMarker).ToArray();
+
+        try
+        {
+            WriteNameArray(unreal, owner, replacement);
+            var grown = ReadNameArray(unreal, owner);
+            if (!grown.SequenceEqual(replacement, StringComparer.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    $"grown TArray<FName> mismatch: expected=[{string.Join(",", replacement)}] " +
+                    $"actual=[{string.Join(",", grown)}]");
+            }
+        }
+        finally
+        {
+            WriteNameArray(unreal, owner, original);
+        }
+
+        var restored = ReadNameArray(unreal, owner);
+        if (!restored.SequenceEqual(original, StringComparer.Ordinal))
+        {
+            throw new InvalidOperationException("original TArray<FName> was not restored");
+        }
+
+        context.Logger.Log(
+            ModLogLevel.Information,
+            $"LIVE-NAME-ARRAY PASS: {unreal.GetPathName(owner)} original={original.Count} grown={replacement.Length} restore=ok");
+    }
+
+    private static IReadOnlyList<string> ReadNameArray(IUnrealReflection unreal, UnrealObjectHandle owner) =>
+        UnrealArrayValue.ToList(
+            unreal.ReadProperty(owner, ActorTagsProperty),
+            static value => value.As<string>());
+
+    private static void WriteNameArray(
+        IUnrealReflection unreal,
+        UnrealObjectHandle owner,
+        IReadOnlyList<string> values) =>
+        unreal.WriteProperty(
+            owner,
+            ActorTagsProperty,
+            UnrealArrayValue.From(ActorTagsValue, values, UnrealValue.From));
 
     private void TryVerifyLazyReference()
     {
@@ -236,7 +704,17 @@ public sealed class DeadzoneLiveReflectionProbe : IRogueMod, IRogueModGameEvents
             return;
         }
 
-        foreach (var handle in context.Unreal.FindAllOf("NiagaraSystem"))
+        IReadOnlyList<UnrealObjectHandle> optionalHandles;
+        try
+        {
+            optionalHandles = context.Unreal.FindAllOf("NiagaraSystem");
+        }
+        catch (InvalidOperationException exception)
+        {
+            context.Logger.Log(ModLogLevel.Debug, $"LIVE-TOPTIONAL enumeration deferred: {exception.Message}");
+            return;
+        }
+        foreach (var handle in optionalHandles)
         {
             if (!context.Unreal.IsValid(handle))
             {
@@ -278,7 +756,17 @@ public sealed class DeadzoneLiveReflectionProbe : IRogueMod, IRogueModGameEvents
             return;
         }
 
-        foreach (var handle in context.Unreal.FindAllOf("ValGameInstance"))
+        IReadOnlyList<UnrealObjectHandle> weakHandles;
+        try
+        {
+            weakHandles = context.Unreal.FindAllOf("ValGameInstance");
+        }
+        catch (InvalidOperationException exception)
+        {
+            context.Logger.Log(ModLogLevel.Debug, $"LIVE-WEAK enumeration deferred: {exception.Message}");
+            return;
+        }
+        foreach (var handle in weakHandles)
         {
             if (!context.Unreal.IsValid(handle))
             {

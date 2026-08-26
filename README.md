@@ -8,7 +8,7 @@ Deadzone: Rogue 1.4.2.0 / Unreal Engine 5.6.1 is confirmed working through Proto
 
 The reflection layer is tested in the game’s main menu against real `PlayerController`, UMG, Niagara, and `ValGameInstance` objects. Mod authors get generated, strongly typed C# wrappers instead of manually looking up Unreal objects and properties. The current API supports object discovery, properties, `UFunction` calls, strings, text, POD structs, arrays, optional values, weak and lazy references, plus mutable pre- and post-hooks with deterministic ordering and an optional per-object filter.
 
-The most important paths — including optional, weak, and lazy property mutation/restoration — are verified in the installed game. Nested arrays are covered by automated transport tests; this game build does not currently expose a suitable live target for an in-game smoke test. See [Reflection API status](docs/reflection-api.md) for the supported type matrix and constraints.
+The most important paths — including optional, weak, lazy, object (`FObjectProperty` / `CPF_TObjectPtr`), soft object reference, `TArray<FName>` mutation/restoration, and object creation and actor spawning through `StaticConstructObject`/`UWorld::SpawnActor` — are verified in the installed game. Nested arrays are covered by automated transport tests; this game build does not currently expose a suitable live target for an in-game smoke test. See [Reflection API status](docs/reflection-api.md) for the supported type matrix and constraints.
 
 ## Repository layout
 

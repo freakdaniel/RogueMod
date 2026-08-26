@@ -74,6 +74,28 @@ public interface IUnrealReflection
         Action<UnrealHookContext> callback) =>
         throw new NotSupportedException("The active RogueMod bridge does not support UFunction hooks.");
 
+    /// <summary>
+    /// Constructs a new UObject of the given class through the engine's StaticConstructObject
+    /// path, optionally owned by an outer and optionally given a name. Requires
+    /// <see cref="UnrealReflectionCapabilities.ObjectCreation"/>.
+    /// </summary>
+    UnrealObjectHandle CreateObject(
+        UnrealObjectHandle classHandle,
+        UnrealObjectHandle outerHandle,
+        string? objectName = null) =>
+        throw new NotSupportedException("The active RogueMod bridge does not support Unreal object creation.");
+
+    /// <summary>
+    /// Spawns an actor of the given class into the world that owns the context object.
+    /// Requires <see cref="UnrealReflectionCapabilities.ActorSpawning"/>.
+    /// </summary>
+    UnrealObjectHandle SpawnActor(
+        UnrealObjectHandle contextObject,
+        UnrealObjectHandle classHandle,
+        UnrealVector location,
+        UnrealRotator rotation) =>
+        throw new NotSupportedException("The active RogueMod bridge does not support Unreal actor spawning.");
+
     /// <summary>Registers a UFunction hook with deterministic ordering and an optional exact-object filter.</summary>
     IDisposable RegisterHook(
         UnrealFunctionDescriptor function,
@@ -102,7 +124,10 @@ public enum UnrealReflectionCapabilities
     OptionalValues = 1 << 6,
     WeakObjectReferences = 1 << 7,
     LazyObjectReferences = 1 << 8,
-    FunctionHooks = 1 << 9
+    FunctionHooks = 1 << 9,
+    ObjectCreation = 1 << 10,
+    ActorSpawning = 1 << 11,
+    SoftObjectReferences = 1 << 12
 }
 
 public enum UnrealHookPhase
@@ -153,6 +178,18 @@ public readonly record struct UnrealGuid(uint A, uint B, uint C, uint D)
     public bool IsEmpty => A == 0 && B == 0 && C == 0 && D == 0;
 
     public override string ToString() => $"{A:X8}-{B:X8}-{C:X8}-{D:X8}";
+}
+
+/// <summary>An Unreal FVector translation (three consecutive float components).</summary>
+public readonly record struct UnrealVector(float X, float Y, float Z)
+{
+    public static UnrealVector Zero => default;
+}
+
+/// <summary>An Unreal FRotator (pitch, yaw, roll, three consecutive float components).</summary>
+public readonly record struct UnrealRotator(float Pitch, float Yaw, float Roll)
+{
+    public static UnrealRotator Zero => default;
 }
 
 /// <summary>Runtime layout metadata for one reflected UFunction parameter.</summary>
@@ -358,6 +395,79 @@ public sealed class UnrealLazyObjectReference<T> where T : UnrealObject
             ? null
             : factory(transported.CachedHandle);
         return new UnrealLazyObjectReference<T>(transported, target);
+    }
+}
+
+/// <summary>
+/// Transport for an Unreal TSoftObjectPtr / FSoftObjectPath value: the asset path plus the
+/// weak target already cached by Unreal (null when the path is not loaded). Native storage
+/// preserves the complete 40-byte value for identity-safe writes.
+/// </summary>
+public sealed class UnrealSoftObjectValue
+{
+    public const int NativeStorageSize = 40;
+
+    private readonly byte[] nativeStorage;
+
+    public UnrealSoftObjectValue(string path, UnrealObjectHandle cachedHandle, ReadOnlySpan<byte> nativeStorage)
+    {
+        if (nativeStorage.Length != NativeStorageSize)
+        {
+            throw new ArgumentException(
+                $"An Unreal soft object reference requires exactly {NativeStorageSize} bytes of native storage.",
+                nameof(nativeStorage));
+        }
+
+        Path = path ?? throw new ArgumentNullException(nameof(path));
+        CachedHandle = cachedHandle;
+        this.nativeStorage = nativeStorage.ToArray();
+    }
+
+    public string Path { get; }
+
+    public UnrealObjectHandle CachedHandle { get; }
+
+    public bool IsNull => Path.Length == 0;
+
+    public byte[] CopyNativeStorage() => (byte[])nativeStorage.Clone();
+}
+
+/// <summary>
+/// A typed Unreal soft object reference. The persistent asset path remains available whether
+/// or not the target is loaded; <see cref="CachedTarget"/> is only the already-cached object
+/// and never loads or roots the target.
+/// </summary>
+public sealed class UnrealSoftObjectReference<T> where T : UnrealObject
+{
+    private readonly UnrealSoftObjectValue transported;
+
+    private UnrealSoftObjectReference(UnrealSoftObjectValue transported, T? target)
+    {
+        this.transported = transported;
+        CachedTarget = target;
+    }
+
+    public string Path => transported.Path;
+
+    public T? CachedTarget { get; }
+
+    public bool IsNull => transported.IsNull;
+
+    public static UnrealSoftObjectReference<T> Null { get; } =
+        new(new UnrealSoftObjectValue(string.Empty, UnrealObjectHandle.Null, new byte[UnrealSoftObjectValue.NativeStorageSize]), null);
+
+    public UnrealValue ToUnrealValue() => UnrealValue.From(transported);
+
+    public static UnrealSoftObjectReference<T> FromUnrealValue(
+        UnrealValue value,
+        Func<UnrealObjectHandle, T> factory)
+    {
+        ArgumentNullException.ThrowIfNull(factory);
+        var transported = value.As<UnrealSoftObjectValue>();
+        var target = transported.CachedHandle.IsNull
+            ? null
+            : factory(transported.CachedHandle);
+        return new UnrealSoftObjectReference<T>(transported, target);
     }
 }
 
