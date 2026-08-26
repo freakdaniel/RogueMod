@@ -97,8 +97,6 @@ namespace RogueMod
         using get_element_size_fn = const std::int32_t*(__cdecl*)(const void*);
         using get_bool_in_container_fn = bool(__cdecl*)(void*, const void*, std::int32_t);
         using set_bool_in_container_fn = void(__cdecl*)(void*, void*, bool, std::int32_t);
-        using get_object_property_value_fn = void*(__cdecl*)(const void*, const void*);
-        using set_object_property_value_fn = void(__cdecl*)(const void*, void*, void*);
         using fstring_default_constructor_fn = void*(__cdecl*)(void*);
         using fstring_constructor_fn = void*(__cdecl*)(void*, const wchar_t*);
         using fstring_destructor_fn = void(__cdecl*)(void*);
@@ -125,10 +123,10 @@ namespace RogueMod
         using fweak_object_assign_fn = void(__cdecl*)(void*, const void*);
         using fweak_object_reset_fn = void(__cdecl*)(void*);
         using lazy_object_set_value_fn = void(__cdecl*)(void*, const void*);
-        using typed_object_set_value_fn = void(__cdecl*)(void*, const void*);
+        using soft_object_destroy_value_fn = void(__cdecl*)(void*);
         using fmemory_malloc_fn = void*(__cdecl*)(std::size_t, std::uint32_t);
         using fmemory_free_fn = void(__cdecl*)(void*);
-using initialize_property_value_fn = void(__cdecl*)(const void*, void*);
+        using initialize_property_value_fn = void(__cdecl*)(const void*, void*);
         using destroy_property_value_fn = void(__cdecl*)(const void*, void*);
         using construct_object_parameters_ctor_fn = void(__cdecl*)(void* self, const void* uclass, void* outer);
         using static_construct_object_fn = void*(__cdecl*)(const void* parameters);
@@ -154,6 +152,13 @@ using initialize_property_value_fn = void(__cdecl*)(const void*, void*);
             void* address,
             std::uint32_t encoded_kind,
             const UnrealValue& value) const;
+        [[nodiscard]] std::int32_t assign_soft_object_property(
+            void* object,
+            const wchar_t* property_name,
+            const UnrealValue& value) const;
+        [[nodiscard]] std::int32_t construct_soft_object_value(
+            const wchar_t* path,
+            void* destination) const;
         void destroy_array_value(void* property, void* address, std::uint32_t encoded_kind) const;
         void destroy_optional_value(void* property, void* address) const;
         void dispatch_hook(
@@ -201,8 +206,6 @@ using initialize_property_value_fn = void(__cdecl*)(const void*, void*);
         get_element_size_fn m_get_element_size{};
         get_bool_in_container_fn m_get_bool_in_container{};
         set_bool_in_container_fn m_set_bool_in_container{};
-        get_object_property_value_fn m_get_object_property_value{};
-        set_object_property_value_fn m_set_object_property_value{};
         fstring_default_constructor_fn m_fstring_default_constructor{};
         fstring_constructor_fn m_fstring_constructor{};
         fstring_destructor_fn m_fstring_destructor{};
@@ -229,10 +232,10 @@ using initialize_property_value_fn = void(__cdecl*)(const void*, void*);
         fweak_object_assign_fn m_fweak_object_assign{};
         fweak_object_reset_fn m_fweak_object_reset{};
         lazy_object_set_value_fn m_lazy_object_set_value{};
-        typed_object_set_value_fn m_typed_object_set_value{};
+        soft_object_destroy_value_fn m_soft_object_destroy_value{};
         fmemory_malloc_fn m_fmemory_malloc{};
         fmemory_free_fn m_fmemory_free{};
-initialize_property_value_fn m_initialize_property_value{};
+        initialize_property_value_fn m_initialize_property_value{};
         destroy_property_value_fn m_destroy_property_value{};
         construct_object_parameters_ctor_fn m_construct_object_parameters_ctor{};
         static_construct_object_fn m_static_construct_object{};

@@ -72,6 +72,23 @@ public sealed class TestManagedMod : IRogueMod, IRogueModGameEvents
                 playerController.LazyController = lazyController;
                 var lazyResult = playerController.TestLazyObjectMarshalling(lazyController);
                 _logger.Log(ModLogLevel.Information, $"lazy:{lazyResult.ObjectId}:{lazyResult.CachedTarget?.PathName}");
+                var softController = playerController.SoftController;
+                _logger.Log(ModLogLevel.Information, $"soft:{softController.Path}:{softController.CachedTarget?.PathName}");
+                playerController.SoftController = softController;
+            }
+            if ((context.Unreal.Capabilities & UnrealReflectionCapabilities.ObjectCreation) != 0)
+            {
+                var created = context.Unreal.CreateObject(instance, instance, "ManagedAbiObject");
+                _logger.Log(ModLogLevel.Information, $"created:{created.Value:X16}");
+            }
+            if ((context.Unreal.Capabilities & UnrealReflectionCapabilities.ActorSpawning) != 0)
+            {
+                var spawned = context.Unreal.SpawnActor(
+                    instance,
+                    instance,
+                    new UnrealVector(1.0f, 2.0f, 3.0f),
+                    new UnrealRotator(4.0f, 5.0f, 6.0f));
+                _logger.Log(ModLogLevel.Information, $"spawned:{spawned.Value:X16}");
             }
         }
         return ValueTask.CompletedTask;
@@ -234,6 +251,15 @@ public sealed class TestManagedMod : IRogueMod, IRogueModGameEvents
                 new("Input", "LazyObjectProperty:/Script/Engine.PlayerController", 0, 1, "CPF_Parm", 24),
                 new("ReturnValue", "LazyObjectProperty:/Script/Engine.PlayerController", 24, 1, "CPF_Parm | CPF_OutParm | CPF_ReturnParm", 24)
             ]);
+        private static readonly UnrealPropertyDescriptor SoftControllerProperty =
+            new(
+                "/Script/Engine.PlayerController",
+                "SoftController",
+                "SoftObjectProperty:/Script/Engine.PlayerController",
+                1760,
+                1,
+                "CPF_Protected | CPF_UObjectWrapper",
+                40);
         private static readonly UnrealFunctionDescriptor TestStructMarshallingFunction = new(
             "/Script/Engine.PlayerController",
             "/Script/Engine.PlayerController:TestStructMarshalling",
@@ -390,6 +416,14 @@ public sealed class TestManagedMod : IRogueMod, IRogueModGameEvents
             return UnrealLazyObjectReference<TestPlayerController>.FromUnrealValue(
                 result.ReturnValue,
                 handle => new TestPlayerController(Unreal, handle));
+        }
+
+        public UnrealSoftObjectReference<TestPlayerController> SoftController
+        {
+            get => UnrealSoftObjectReference<TestPlayerController>.FromUnrealValue(
+                ReadValue(SoftControllerProperty),
+                handle => new TestPlayerController(Unreal, handle));
+            set => WriteValue(SoftControllerProperty, value.ToUnrealValue());
         }
 
         private static UnrealValue PackNestedArray(IReadOnlyList<IReadOnlyList<int>> values) =>

@@ -37,11 +37,13 @@ internal static class CSharpTypeTranslator
             "StructProperty" when type.TypePath is not null
                 && supportedStructPaths.Contains(type.TypePath)
                 && typeNames.TryGetValue(type.TypePath, out var structName) => Struct(structName),
-            "ObjectProperty" or "ClassProperty" or "InterfaceProperty" or "SoftObjectProperty"
-                or "SoftClassProperty" or "WeakObjectProperty" when type.TypePath is not null
+            "SoftObjectProperty" or "SoftClassProperty" when type.TypePath is not null
+                && typeNames.TryGetValue(type.TypePath, out var softObjectName) => SoftObject(softObjectName),
+            "SoftObjectProperty" or "SoftClassProperty" => SoftObject("UnrealObject"),
+            "ObjectProperty" or "ClassProperty" or "InterfaceProperty" or "WeakObjectProperty" when type.TypePath is not null
                 && typeNames.TryGetValue(type.TypePath, out var objectName) => new CsType(objectName + "?", true, objectName),
-            "ObjectProperty" or "ClassProperty" or "InterfaceProperty" or "SoftObjectProperty"
-                or "SoftClassProperty" or "WeakObjectProperty" => new CsType("UnrealObject?", true, "UnrealObject"),
+            "ObjectProperty" or "ClassProperty" or "InterfaceProperty" or "WeakObjectProperty" =>
+                new CsType("UnrealObject?", true, "UnrealObject"),
             "LazyObjectProperty" when type.TypePath is not null
                 && typeNames.TryGetValue(type.TypePath, out var lazyObjectName) => LazyObject(lazyObjectName),
             "LazyObjectProperty" => LazyObject("UnrealObject"),
@@ -67,6 +69,8 @@ internal static class CSharpTypeTranslator
             ? $"WrapObject({valueExpression}, static (unreal, handle) => new {type.NonNullableName}(unreal, handle))"
             : type.LazyObjectAdapter
                 ? $"UnrealLazyObjectReference<{type.NonNullableName}>.FromUnrealValue({valueExpression}, handle => new {type.NonNullableName}(Unreal, handle))"
+            : type.SoftObjectAdapter
+                ? $"UnrealSoftObjectReference<{type.NonNullableName}>.FromUnrealValue({valueExpression}, handle => new {type.NonNullableName}(Unreal, handle))"
             : type.StructAdapter
                 ? $"{type.Name}.FromUnrealValue({valueExpression})"
                 : type.ArrayAdapter
@@ -84,6 +88,8 @@ internal static class CSharpTypeTranslator
             ? $"UnrealHookValue.WrapObject<{type.NonNullableName}>({valueExpression}, {unrealExpression}, static (reflection, handle) => new {type.NonNullableName}(reflection, handle))"
             : type.LazyObjectAdapter
                 ? $"UnrealLazyObjectReference<{type.NonNullableName}>.FromUnrealValue({valueExpression}, handle => new {type.NonNullableName}({unrealExpression}, handle))"
+            : type.SoftObjectAdapter
+                ? $"UnrealSoftObjectReference<{type.NonNullableName}>.FromUnrealValue({valueExpression}, handle => new {type.NonNullableName}({unrealExpression}, handle))"
             : type.StructAdapter
                 ? $"{type.Name}.FromUnrealValue({valueExpression})"
                 : type.ArrayAdapter
@@ -102,6 +108,8 @@ internal static class CSharpTypeTranslator
                 ? $"{valueExpression}.ToUnrealValue()"
                 : type.LazyObjectAdapter
                     ? $"{valueExpression}.ToUnrealValue()"
+                    : type.SoftObjectAdapter
+                        ? $"{valueExpression}.ToUnrealValue()"
                     : type.ArrayAdapter || type.OptionalAdapter
                         ? WriteValueExpression(
                             type,
@@ -343,6 +351,7 @@ internal static class CSharpTypeTranslator
     private static CsType Container(string name, CsType inner) => new($"{name}<{inner.Name}>", false, string.Empty);
     private static CsType Optional(CsType inner) => new($"UnrealOptional<{inner.Name}>", false, string.Empty, OptionalAdapter: true, Element: inner);
     private static CsType LazyObject(string targetName) => new($"UnrealLazyObjectReference<{targetName}>", false, targetName, LazyObjectAdapter: true);
+    private static CsType SoftObject(string targetName) => new($"UnrealSoftObjectReference<{targetName}>", false, targetName, SoftObjectAdapter: true);
     private static bool HasFlag(string flags, string flag) =>
         flags.Split('|', StringSplitOptions.TrimEntries).Contains(flag, StringComparer.Ordinal);
     private static string Literal(string value) => JsonSerializer.Serialize(value);
@@ -356,4 +365,5 @@ internal sealed record CsType(
     bool ArrayAdapter = false,
     bool OptionalAdapter = false,
     bool LazyObjectAdapter = false,
+    bool SoftObjectAdapter = false,
     CsType? Element = null);

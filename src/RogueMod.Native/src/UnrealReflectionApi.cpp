@@ -19,17 +19,16 @@ namespace RogueMod
         constexpr std::size_t maximum_marshaled_struct_size = 1'048'576;
         constexpr std::size_t maximum_marshaled_array_length = 1'048'576;
         constexpr std::size_t maximum_marshaled_array_bytes = 64U * 1024U * 1024U;
+        constexpr std::size_t deadzone_object_ptr_setter_vtable_offset = 0x1e8;
+        constexpr std::size_t deadzone_object_getter_vtable_offset = 0x200;
         constexpr std::uint32_t property_kind_mask = 0xffU;
         constexpr std::uint32_t array_element_kind_shift = 8U;
         constexpr std::size_t lazy_object_storage_size = 24;
-        // TSoftObjectPtr in UE 5.6.1 is exactly FSoftObjectPath: an FTopLevelAssetPath
-        // (PackageName FName at 0, AssetName FName at 8), an FString sub-path at 16, and an
-        // eight-byte engine tag at 32. There is no TWeakObjectPtr cache in the storage.
-        // Verified from the FSoftObjectPath constructor disassembly, which zeroes 0x28 bytes.
+        // The live property is a 40-byte FSoftObjectPtr. Its leading 32-byte
+        // FSoftObjectPath contains an FTopLevelAssetPath (two FNames) and an FString;
+        // the trailing eight bytes are private cache/tag state. Writes never infer or
+        // mutate this layout: the game builds and assigns the value through Kismet UFunctions.
         constexpr std::size_t soft_object_storage_size = 40;
-        constexpr std::size_t soft_object_package_name_offset = 0;
-        constexpr std::size_t soft_object_asset_name_offset = 8;
-        constexpr std::size_t soft_object_subpath_offset = 16;
 
         struct LazyObjectWire
         {
@@ -230,6 +229,64 @@ namespace RogueMod
             return reinterpret_cast<Function>(GetProcAddress(module, name));
         }
 
+        bool executable_span(const void* address, std::size_t size)
+        {
+            if (address == nullptr || size == 0)
+            {
+                return false;
+            }
+            MEMORY_BASIC_INFORMATION information{};
+            if (VirtualQuery(address, &information, sizeof(information)) == 0
+                || information.State != MEM_COMMIT)
+            {
+                return false;
+            }
+            const auto protection = information.Protect & 0xffU;
+            const auto executable = protection == PAGE_EXECUTE
+                || protection == PAGE_EXECUTE_READ
+                || protection == PAGE_EXECUTE_READWRITE
+                || protection == PAGE_EXECUTE_WRITECOPY;
+            const auto start = reinterpret_cast<std::uintptr_t>(address);
+            const auto region_start = reinterpret_cast<std::uintptr_t>(information.BaseAddress);
+            if (!executable || start < region_start)
+            {
+                return false;
+            }
+            const auto offset = start - region_start;
+            return offset <= information.RegionSize
+                && size <= information.RegionSize - offset;
+        }
+
+        bool __cdecl validate_deadzone_object_accessors(const void* setter, const void* getter)
+        {
+            // Deadzone: Rogue 1.4.2.0 / UE 5.6.1. These are structural fragments from the
+            // disassembled game functions, not UE4SS wrappers. The setter dereferences the
+            // hidden TObjectPtr temporary in R8, runs the incremental-GC write barrier, and
+            // commits the pointer through RDX. The getter returns [RDX]. A game update that
+            // changes either implementation disables writes instead of calling an unknown slot.
+            if (!executable_span(setter, 0x50) || !executable_span(getter, 4))
+            {
+                return false;
+            }
+            const auto* code = static_cast<const std::uint8_t*>(setter);
+            const std::uint8_t prologue[]{0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x20};
+            const std::uint8_t arguments[]{0x49, 0x8b, 0xd8, 0x48, 0x8b, 0xfa};
+            const std::uint8_t load_target[]{0x49, 0x8b, 0x08};
+            const std::uint8_t barrier_commit[]{0x48, 0x8b, 0x03, 0x48, 0x89, 0x07};
+            const std::uint8_t null_commit[]{0x48, 0x89, 0x0a};
+            const std::uint8_t direct_load[]{0x49, 0x8b, 0x00};
+            const std::uint8_t direct_commit[]{0x48, 0x89, 0x02};
+            const std::uint8_t getter_body[]{0x48, 0x8b, 0x02, 0xc3};
+            return std::memcmp(code, prologue, sizeof(prologue)) == 0
+                && std::memcmp(code + 0x11, arguments, sizeof(arguments)) == 0
+                && std::memcmp(code + 0x19, load_target, sizeof(load_target)) == 0
+                && std::memcmp(code + 0x26, barrier_commit, sizeof(barrier_commit)) == 0
+                && std::memcmp(code + 0x37, null_commit, sizeof(null_commit)) == 0
+                && std::memcmp(code + 0x45, direct_load, sizeof(direct_load)) == 0
+                && std::memcmp(code + 0x4d, direct_commit, sizeof(direct_commit)) == 0
+                && std::memcmp(getter, getter_body, sizeof(getter_body)) == 0;
+        }
+
         bool marshal_string(const wchar_t* data, std::size_t length, UnrealValue& value)
         {
             if (length > maximum_marshaled_string_length || (data == nullptr && length != 0))
@@ -377,12 +434,6 @@ namespace RogueMod
         m_set_bool_in_container = load_export<set_bool_in_container_fn>(
             ue4ss_module,
             "?SetPropertyValueInContainer@FBoolProperty@Unreal@RC@@QEAA@PEAX_NH@Z");
-        m_get_object_property_value = load_export<get_object_property_value_fn>(
-            ue4ss_module,
-            "?GetObjectPropertyValue@FObjectPropertyBase@Unreal@RC@@QEBAPEAVUObject@23@PEBX@Z");
-        m_set_object_property_value = load_export<set_object_property_value_fn>(
-            ue4ss_module,
-            "?SetObjectPropertyValue@FObjectPropertyBase@Unreal@RC@@QEBAXPEAXPEAVUObject@23@@Z");
         m_fstring_default_constructor = load_export<fstring_default_constructor_fn>(
             ue4ss_module,
             "??0FString@Unreal@RC@@QEAA@XZ");
@@ -461,9 +512,9 @@ namespace RogueMod
         m_lazy_object_set_value = load_export<lazy_object_set_value_fn>(
             ue4ss_module,
             "?SetPropertyValue@?$TPropertyTypeFundamentals@UFLazyObjectPtr@Unreal@RC@@@Unreal@RC@@SAXPEAXAEBUFLazyObjectPtr@23@@Z");
-        m_typed_object_set_value = load_export<typed_object_set_value_fn>(
+        m_soft_object_destroy_value = load_export<soft_object_destroy_value_fn>(
             ue4ss_module,
-            "?SetPropertyValue@?$TPropertyTypeFundamentals@PEAVUObject@Unreal@RC@@@Unreal@RC@@SAXPEAXAEBQEAVUObject@23@@Z");
+            "?DestroyPropertyValue@?$TPropertyTypeFundamentals@UFSoftObjectPtr@Unreal@RC@@@Unreal@RC@@SAXPEAX@Z");
         m_fmemory_malloc = load_export<fmemory_malloc_fn>(
             ue4ss_module,
             "?Malloc@FMemory@Unreal@RC@@SAPEAX_KI@Z");
@@ -473,7 +524,7 @@ namespace RogueMod
         m_initialize_property_value = load_export<initialize_property_value_fn>(
             ue4ss_module,
             "?InitializeValue@FProperty@Unreal@RC@@QEBAXPEAX@Z");
-m_destroy_property_value = load_export<destroy_property_value_fn>(
+        m_destroy_property_value = load_export<destroy_property_value_fn>(
             ue4ss_module,
             "?DestroyValue@FProperty@Unreal@RC@@QEBAXPEAX@Z");
         m_construct_object_parameters_ctor = load_export<construct_object_parameters_ctor_fn>(
@@ -493,9 +544,9 @@ m_destroy_property_value = load_export<destroy_property_value_fn>(
             m_initialize_property_value,
             m_destroy_property_value,
             m_fmemory_malloc,
-            m_get_object_property_value,
-            m_set_object_property_value,
-            m_typed_object_set_value,
+            deadzone_object_ptr_setter_vtable_offset,
+            deadzone_object_getter_vtable_offset,
+            validate_deadzone_object_accessors,
             m_log});
 
         using process_event_callback = std::function<void(void*, void*, void*)>;
@@ -546,8 +597,6 @@ m_destroy_property_value = load_export<destroy_property_value_fn>(
             && m_get_element_size != nullptr
             && m_get_bool_in_container != nullptr
             && m_set_bool_in_container != nullptr
-            && m_get_object_property_value != nullptr
-            && m_set_object_property_value != nullptr
             && m_fstring_default_constructor != nullptr
             && m_fstring_constructor != nullptr
             && m_fstring_destructor != nullptr
@@ -566,7 +615,8 @@ m_destroy_property_value = load_export<destroy_property_value_fn>(
             && m_get_array_inner != nullptr
             && m_fmemory_malloc != nullptr
             && m_fmemory_free != nullptr
-            && m_mutation_backend.is_available();
+            && m_mutation_backend.is_available()
+            && m_mutation_backend.can_access_objects();
         return m_resolved;
     }
 
@@ -605,10 +655,21 @@ m_destroy_property_value = load_export<destroy_property_value_fn>(
                        && m_world_spawn_actor != nullptr
                     ? (1U << 11)
                     : 0U)
-                | (m_fname_to_string != nullptr
-                       && m_fname_constructor != nullptr
+                | (m_static_find_object != nullptr
+                       && m_get_function_by_name_in_chain != nullptr
+                       && m_get_parms_size != nullptr
+                       && m_get_num_parms != nullptr
+                       && m_get_first_property != nullptr
+                       && m_get_next_field_as_property != nullptr
+                       && m_get_offset != nullptr
+                       && m_get_element_size != nullptr
+                       && m_process_event != nullptr
                        && m_fstring_constructor != nullptr
-                       && m_fstring_copy_assignment != nullptr
+                       && m_fstring_destructor != nullptr
+                       && m_fname_constructor != nullptr
+                       && m_initialize_property_value != nullptr
+                       && m_destroy_property_value != nullptr
+                       && m_soft_object_destroy_value != nullptr
                     ? (1U << 12)
                     : 0U)
             : 0U;
@@ -650,77 +711,74 @@ m_destroy_property_value = load_export<destroy_property_value_fn>(
         }
         if (kind == UnrealPropertyKind::Object)
         {
-            // The exported FObjectPropertyBase::GetObjectPropertyValue wrapper returns a
-            // property-class constant for this game (see try_assign_object), so object
-            // values are read as raw eight-byte pointer slots instead. This matches the
-            // shipping storage of FObjectProperty and CPF_TObjectPtr alike.
-            std::uint64_t raw{};
-            std::memcpy(&raw, address, sizeof(raw));
-            value.data = make_handle(reinterpret_cast<const void*>(raw));
+            void* target{};
+            if (!m_mutation_backend.try_read_object(property, address, target))
+            {
+                return false;
+            }
+            value.data = make_handle(target);
             return true;
         }
         if (kind == UnrealPropertyKind::SoftObject)
         {
-            if (m_fname_to_string == nullptr || m_fstring_destructor == nullptr)
+            if (m_static_find_object == nullptr || m_get_function_by_name_in_chain == nullptr
+                || m_get_parms_size == nullptr || m_get_num_parms == nullptr
+                || m_get_first_property == nullptr || m_get_next_field_as_property == nullptr
+                || m_get_offset == nullptr || m_get_element_size == nullptr
+                || m_process_event == nullptr || m_fstring_destructor == nullptr)
+            {
+                return false;
+            }
+            auto* library = m_static_find_object(
+                nullptr,
+                nullptr,
+                L"/Script/Engine.Default__KismetSystemLibrary",
+                false);
+            auto* function = library == nullptr
+                ? nullptr
+                : m_get_function_by_name_in_chain(library, L"Conv_SoftObjectReferenceToString");
+            const auto* parms_size = function == nullptr ? nullptr : m_get_parms_size(function);
+            const auto* num_parms = function == nullptr ? nullptr : m_get_num_parms(function);
+            auto* input_property = function == nullptr ? nullptr : m_get_first_property(function);
+            auto* return_property = input_property == nullptr
+                ? nullptr
+                : m_get_next_field_as_property(input_property);
+            const auto* input_offset = input_property == nullptr ? nullptr : m_get_offset(input_property);
+            const auto* input_size = input_property == nullptr ? nullptr : m_get_element_size(input_property);
+            const auto* return_offset = return_property == nullptr ? nullptr : m_get_offset(return_property);
+            const auto* return_size = return_property == nullptr ? nullptr : m_get_element_size(return_property);
+            if (function == nullptr || parms_size == nullptr || *parms_size != 56
+                || num_parms == nullptr || *num_parms != 2
+                || input_offset == nullptr || *input_offset != 0
+                || input_size == nullptr || *input_size != 40
+                || return_offset == nullptr || *return_offset != 40
+                || return_size == nullptr || *return_size != 16)
+            {
+                return false;
+            }
+
+            std::vector<std::byte> buffer(56);
+            // The Kismet input is const-ref. A shallow opaque copy is valid for the duration
+            // of ProcessEvent and is deliberately not destroyed because it does not own the
+            // live property's FString allocation.
+            std::memcpy(buffer.data(), address, 40);
+            auto* string_result = buffer.data() + 40;
+            m_process_event(library, function, buffer.data());
+            ScopeExit string_cleanup([&]() { m_fstring_destructor(string_result); });
+
+            UnrealValue path_value{};
+            if (!marshal_fstring(string_result, path_value))
             {
                 return false;
             }
             auto* wire = static_cast<SoftObjectWire*>(CoTaskMemAlloc(sizeof(SoftObjectWire)));
             if (wire == nullptr)
             {
+                free_marshaled_value(path_value);
                 return false;
             }
             *wire = {};
-            std::memcpy(wire->storage, address, soft_object_storage_size);
-            wire->cached_handle = 0;
-
-            const auto* value_bytes = static_cast<const std::byte*>(address);
-            std::wstring path;
-            const auto* package_index = reinterpret_cast<const std::int32_t*>(value_bytes + soft_object_package_name_offset);
-            const auto* asset_index = reinterpret_cast<const std::int32_t*>(value_bytes + soft_object_asset_name_offset);
-            if (*package_index != 0)
-            {
-                alignas(std::wstring) std::byte text_storage[sizeof(std::wstring)];
-                auto* text = reinterpret_cast<std::wstring*>(text_storage);
-                m_fname_to_string(value_bytes + soft_object_package_name_offset, text);
-                path += text->data();
-                text->~basic_string();
-            }
-            if (*asset_index != 0)
-            {
-                if (!path.empty())
-                {
-                    path += L'.';
-                }
-                alignas(std::wstring) std::byte text_storage[sizeof(std::wstring)];
-                auto* text = reinterpret_cast<std::wstring*>(text_storage);
-                m_fname_to_string(value_bytes + soft_object_asset_name_offset, text);
-                path += text->data();
-                text->~basic_string();
-            }
-            const auto* subpath_layout = reinterpret_cast<const FStringLayout*>(value_bytes + soft_object_subpath_offset);
-            const auto subpath_length = subpath_layout->num <= 0
-                ? 0U
-                : static_cast<std::size_t>(subpath_layout->num - 1);
-            if (subpath_length > 0)
-            {
-                path += L':';
-                path.append(subpath_layout->data, subpath_length);
-            }
-
-            auto* path_buffer = static_cast<wchar_t*>(
-                CoTaskMemAlloc((path.size() + 1) * sizeof(wchar_t)));
-            if (path_buffer == nullptr)
-            {
-                CoTaskMemFree(wire);
-                return false;
-            }
-            if (!path.empty())
-            {
-                std::memcpy(path_buffer, path.data(), path.size() * sizeof(wchar_t));
-            }
-            path_buffer[path.size()] = L'\0';
-            wire->path = path_buffer;
+            wire->path = reinterpret_cast<wchar_t*>(path_value.data);
 
             value.reserved = sizeof(SoftObjectWire);
             value.data = reinterpret_cast<std::uint64_t>(wire);
@@ -956,54 +1014,34 @@ m_destroy_property_value = load_export<destroy_property_value_fn>(
         if (kind == UnrealPropertyKind::SoftObject)
         {
             if (value.data == 0 || value.reserved != sizeof(SoftObjectWire)
-                || m_fname_constructor == nullptr
-                || m_fstring_constructor == nullptr
-                || m_fstring_copy_assignment == nullptr
-                || m_fstring_destructor == nullptr)
+                || m_soft_object_destroy_value == nullptr)
             {
                 return -4;
             }
-            auto* wire = reinterpret_cast<const SoftObjectWire*>(value.data);
-
-            const auto path = std::wstring(wire->path != nullptr ? wire->path : L"");
-            auto asset_path = path;
-            std::wstring subpath;
-            const auto colon = path.find(L':');
-            if (colon != std::wstring::npos)
+            const auto* wire = reinterpret_cast<const SoftObjectWire*>(value.data);
+            const auto* path = wire->path == nullptr ? L"" : wire->path;
+            std::byte temporary[soft_object_storage_size]{};
+            const auto construction_result = construct_soft_object_value(path, temporary);
+            if (construction_result != 0)
             {
-                asset_path = path.substr(0, colon);
-                subpath = path.substr(colon + 1);
+                return construction_result;
             }
-            auto package = asset_path;
-            std::wstring asset;
-            const auto dot = asset_path.find_last_of(L'.');
-            if (dot != std::wstring::npos)
+            bool temporary_live = true;
+            ScopeExit temporary_cleanup([&]()
             {
-                package = asset_path.substr(0, dot);
-                asset = asset_path.substr(dot + 1);
-            }
+                if (temporary_live)
+                {
+                    m_soft_object_destroy_value(temporary);
+                }
+            });
 
-            auto* slot = static_cast<std::byte*>(address);
-            alignas(8) std::byte package_name[8]{};
-            alignas(8) std::byte asset_name[8]{};
-            if (!package.empty())
-            {
-                m_fname_constructor(package_name, package.c_str(), 1, nullptr);
-            }
-            if (!asset.empty())
-            {
-                m_fname_constructor(asset_name, asset.c_str(), 1, nullptr);
-            }
-            std::memcpy(slot + soft_object_package_name_offset, package_name, sizeof(package_name));
-            std::memcpy(slot + soft_object_asset_name_offset, asset_name, sizeof(asset_name));
-
-            alignas(16) std::byte temp_subpath[16]{};
-            FStringCleanup subpath_cleanup(m_fstring_destructor);
-            m_fstring_constructor(temp_subpath, subpath.c_str());
-            subpath_cleanup.add(temp_subpath);
-            m_fstring_copy_assignment(slot + soft_object_subpath_offset, temp_subpath);
-
-            std::memcpy(slot + 32, wire->storage + 32, soft_object_storage_size - 32);
+            // This path is used for initialized UFunction parameter storage (including
+            // hook replacement), never for direct reflected property assignment. Replace
+            // it with a game-built value while preserving the owned FString lifetime.
+            m_soft_object_destroy_value(address);
+            std::memcpy(address, temporary, soft_object_storage_size);
+            std::memset(temporary, 0, soft_object_storage_size);
+            temporary_live = false;
             return 0;
         }
         if (kind == UnrealPropertyKind::String || kind == UnrealPropertyKind::Name || kind == UnrealPropertyKind::Text)
@@ -1121,20 +1159,11 @@ m_destroy_property_value = load_export<destroy_property_value_fn>(
                     auto* element_address = destination_data + static_cast<std::size_t>(index) * inner_size;
                     if (inner_kind == UnrealPropertyKind::Object)
                     {
-                        void* target{};
-                        if (elements[index].data != 0)
-                        {
-                            target = const_cast<void*>(resolve_handle(elements[index].data));
-                            if (target == nullptr)
-                            {
-                                return -4;
-                            }
-                        }
-                        
-                        std::uint64_t element_raw{};
-                        std::memcpy(&element_raw, element_address, sizeof(element_raw));
-                        if (element_raw != static_cast<std::uint64_t>(
-                                reinterpret_cast<std::uintptr_t>(target)))
+                        if (assign_typed_value(
+                                inner,
+                                element_address,
+                                inner_encoded_kind,
+                                elements[index]) != 0)
                         {
                             return -7;
                         }
@@ -1334,6 +1363,207 @@ m_destroy_property_value = load_export<destroy_property_value_fn>(
         }
     }
 
+    std::int32_t UnrealReflectionApi::construct_soft_object_value(
+        const wchar_t* path,
+        void* destination) const
+    {
+        if (path == nullptr || destination == nullptr
+            || m_static_find_object == nullptr || m_get_function_by_name_in_chain == nullptr
+            || m_get_parms_size == nullptr || m_get_num_parms == nullptr
+            || m_get_first_property == nullptr || m_get_next_field_as_property == nullptr
+            || m_get_offset == nullptr || m_get_element_size == nullptr
+            || m_process_event == nullptr || m_fstring_constructor == nullptr
+            || m_fstring_destructor == nullptr
+            || m_initialize_property_value == nullptr || m_destroy_property_value == nullptr
+            || m_soft_object_destroy_value == nullptr)
+        {
+            return -4;
+        }
+
+        auto* library = m_static_find_object(
+            nullptr,
+            nullptr,
+            L"/Script/Engine.Default__KismetSystemLibrary",
+            false);
+        if (library == nullptr)
+        {
+            return -7;
+        }
+
+        auto get_parameters = [&](const wchar_t* function_name,
+                                  std::uint16_t expected_size,
+                                  std::uint8_t expected_count)
+        {
+            std::vector<void*> properties;
+            auto* function = m_get_function_by_name_in_chain(library, function_name);
+            const auto* size = function == nullptr ? nullptr : m_get_parms_size(function);
+            const auto* count = function == nullptr ? nullptr : m_get_num_parms(function);
+            if (function == nullptr || size == nullptr || count == nullptr
+                || *size != expected_size || *count != expected_count)
+            {
+                return std::pair<void*, std::vector<void*>>{};
+            }
+            properties.reserve(expected_count);
+            auto* property = m_get_first_property(function);
+            for (std::uint8_t index = 0; index < expected_count; ++index)
+            {
+                if (property == nullptr)
+                {
+                    return std::pair<void*, std::vector<void*>>{};
+                }
+                properties.push_back(property);
+                property = m_get_next_field_as_property(property);
+            }
+            return std::pair{function, std::move(properties)};
+        };
+        auto has_layout = [&](void* property, std::int32_t offset, std::int32_t size)
+        {
+            const auto* live_offset = m_get_offset(property);
+            const auto* live_size = m_get_element_size(property);
+            return live_offset != nullptr && live_size != nullptr
+                && *live_offset == offset && *live_size == size;
+        };
+
+        auto [make_path, make_properties] = get_parameters(L"MakeSoftObjectPath", 48, 2);
+        auto [to_reference, conversion_properties] = get_parameters(L"Conv_SoftObjPathToSoftObjRef", 72, 2);
+        if (make_path == nullptr || to_reference == nullptr
+            || !has_layout(make_properties[0], 0, 16)
+            || !has_layout(make_properties[1], 16, 32)
+            || !has_layout(conversion_properties[0], 0, 32)
+            || !has_layout(conversion_properties[1], 32, 40))
+        {
+            return -7;
+        }
+
+        std::vector<std::byte> make_buffer(48);
+        m_fstring_constructor(make_buffer.data(), path);
+        ScopeExit make_string_cleanup([&]() { m_fstring_destructor(make_buffer.data()); });
+        auto* make_return = make_buffer.data() + 16;
+        m_initialize_property_value(make_properties[1], make_return);
+        bool make_return_live = true;
+        ScopeExit make_return_cleanup([&]()
+        {
+            if (make_return_live)
+            {
+                m_destroy_property_value(make_properties[1], make_return);
+            }
+        });
+        m_process_event(library, make_path, make_buffer.data());
+
+        std::vector<std::byte> conversion_buffer(72);
+        auto* conversion_input = conversion_buffer.data();
+        std::memcpy(conversion_input, make_return, 32);
+        std::memset(make_return, 0, 32);
+        make_return_live = false;
+        bool conversion_input_live = true;
+        ScopeExit conversion_input_cleanup([&]()
+        {
+            if (conversion_input_live)
+            {
+                m_destroy_property_value(conversion_properties[0], conversion_input);
+            }
+        });
+        auto* conversion_return = conversion_buffer.data() + 32;
+        bool conversion_return_live = false;
+        m_process_event(library, to_reference, conversion_buffer.data());
+        conversion_return_live = true;
+        ScopeExit conversion_return_cleanup([&]()
+        {
+            if (conversion_return_live)
+            {
+                m_soft_object_destroy_value(conversion_return);
+            }
+        });
+
+        std::memcpy(destination, conversion_return, soft_object_storage_size);
+        std::memset(conversion_return, 0, 40);
+        conversion_return_live = false;
+        conversion_input_live = false;
+        m_destroy_property_value(conversion_properties[0], conversion_input);
+        return 0;
+    }
+
+    std::int32_t UnrealReflectionApi::assign_soft_object_property(
+        void* object,
+        const wchar_t* property_name,
+        const UnrealValue& value) const
+    {
+        if (object == nullptr || property_name == nullptr || *property_name == L'\0'
+            || value.data == 0 || value.reserved != sizeof(SoftObjectWire)
+            || m_static_find_object == nullptr || m_get_function_by_name_in_chain == nullptr
+            || m_get_parms_size == nullptr || m_get_num_parms == nullptr
+            || m_get_first_property == nullptr || m_get_next_field_as_property == nullptr
+            || m_get_offset == nullptr || m_get_element_size == nullptr
+            || m_process_event == nullptr || m_fname_constructor == nullptr
+            || m_soft_object_destroy_value == nullptr)
+        {
+            return -4;
+        }
+
+        const auto* wire = reinterpret_cast<const SoftObjectWire*>(value.data);
+        const auto* path = wire->path == nullptr ? L"" : wire->path;
+        std::byte soft_value[soft_object_storage_size]{};
+        const auto construction_result = construct_soft_object_value(path, soft_value);
+        if (construction_result != 0)
+        {
+            return construction_result;
+        }
+        bool soft_value_live = true;
+        ScopeExit soft_value_cleanup([&]()
+        {
+            if (soft_value_live)
+            {
+                m_soft_object_destroy_value(soft_value);
+            }
+        });
+
+        auto* library = m_static_find_object(
+            nullptr,
+            nullptr,
+            L"/Script/Engine.Default__KismetSystemLibrary",
+            false);
+        auto* set_property = library == nullptr
+            ? nullptr
+            : m_get_function_by_name_in_chain(library, L"SetSoftObjectPropertyByName");
+        const auto* parms_size = set_property == nullptr ? nullptr : m_get_parms_size(set_property);
+        const auto* num_parms = set_property == nullptr ? nullptr : m_get_num_parms(set_property);
+        auto* object_property = set_property == nullptr ? nullptr : m_get_first_property(set_property);
+        auto* name_property = object_property == nullptr
+            ? nullptr
+            : m_get_next_field_as_property(object_property);
+        auto* value_property = name_property == nullptr
+            ? nullptr
+            : m_get_next_field_as_property(name_property);
+        auto has_layout = [&](void* property, std::int32_t offset, std::int32_t size)
+        {
+            const auto* live_offset = property == nullptr ? nullptr : m_get_offset(property);
+            const auto* live_size = property == nullptr ? nullptr : m_get_element_size(property);
+            return live_offset != nullptr && live_size != nullptr
+                && *live_offset == offset && *live_size == size;
+        };
+        if (set_property == nullptr || parms_size == nullptr || *parms_size != 56
+            || num_parms == nullptr || *num_parms != 3
+            || !has_layout(object_property, 0, 8)
+            || !has_layout(name_property, 8, 8)
+            || !has_layout(value_property, 16, 40))
+        {
+            return -7;
+        }
+
+        std::vector<std::byte> setter_buffer(56);
+        std::memcpy(setter_buffer.data(), &object, sizeof(object));
+        m_fname_constructor(setter_buffer.data() + 8, property_name, 1, nullptr);
+        std::memcpy(setter_buffer.data() + 16, soft_value, soft_object_storage_size);
+        std::memset(soft_value, 0, soft_object_storage_size);
+        soft_value_live = false;
+        ScopeExit setter_value_cleanup([&]()
+        {
+            m_soft_object_destroy_value(setter_buffer.data() + 16);
+        });
+        m_process_event(library, set_property, setter_buffer.data());
+        return 0;
+    }
+
     std::int32_t UnrealReflectionApi::write_property(
         std::uint64_t handle,
         const wchar_t* property_name,
@@ -1375,6 +1605,11 @@ m_destroy_property_value = load_export<destroy_property_value_fn>(
                 }
                 m_set_bool_in_container(property, object, value->data != 0, 0);
                 return 0;
+            }
+            const auto property_kind = decode_kind(encoded_property_kind);
+            if (property_kind == UnrealPropertyKind::SoftObject)
+            {
+                return assign_soft_object_property(object, property_name, *value);
             }
             auto* address = static_cast<std::byte*>(object) + *offset;
             return assign_typed_value(property, address, encoded_property_kind, *value);
@@ -1579,6 +1814,9 @@ m_destroy_property_value = load_export<destroy_property_value_fn>(
                             || (parameter.value.reserved == 1 && parameter.value.data == 0)))
                     || (kind == UnrealPropertyKind::LazyObject
                         && (parameter.value.reserved != sizeof(LazyObjectWire)
+                            || parameter.value.data == 0))
+                    || (kind == UnrealPropertyKind::SoftObject
+                        && (parameter.value.reserved != sizeof(SoftObjectWire)
                             || parameter.value.data == 0)))
                 {
                     return -5;
@@ -1604,6 +1842,14 @@ m_destroy_property_value = load_export<destroy_property_value_fn>(
                 for (auto iterator = optional_values.rbegin(); iterator != optional_values.rend(); ++iterator)
                 {
                     destroy_optional_value(iterator->first, iterator->second);
+                }
+            });
+            std::vector<void*> soft_object_values;
+            ScopeExit soft_object_cleanup([&]()
+            {
+                for (auto iterator = soft_object_values.rbegin(); iterator != soft_object_values.rend(); ++iterator)
+                {
+                    m_soft_object_destroy_value(*iterator);
                 }
             });
             for (std::uint32_t index = 0; index < parameter_count; ++index)
@@ -1711,6 +1957,24 @@ m_destroy_property_value = load_export<destroy_property_value_fn>(
                         return -5;
                     }
                 }
+                else if (kind == UnrealPropertyKind::SoftObject)
+                {
+                    if (m_soft_object_destroy_value == nullptr)
+                    {
+                        return -5;
+                    }
+                    std::memset(address, 0, size);
+                    soft_object_values.push_back(address);
+                    if (is_input)
+                    {
+                        const auto* wire = reinterpret_cast<const SoftObjectWire*>(parameter.value.data);
+                        const auto* path = wire->path == nullptr ? L"" : wire->path;
+                        if (construct_soft_object_value(path, address) != 0)
+                        {
+                            return -5;
+                        }
+                    }
+                }
                 else if (!is_input)
                 {
                     continue;
@@ -1800,7 +2064,8 @@ m_destroy_property_value = load_export<destroy_property_value_fn>(
                         || kind == UnrealPropertyKind::Struct
                         || kind == UnrealPropertyKind::Array
                         || kind == UnrealPropertyKind::Optional
-                        || kind == UnrealPropertyKind::LazyObject)
+                        || kind == UnrealPropertyKind::LazyObject
+                        || kind == UnrealPropertyKind::SoftObject)
                     {
                         allocation_cleanup.add(parameter.value);
                     }

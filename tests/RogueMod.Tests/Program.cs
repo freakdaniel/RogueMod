@@ -629,6 +629,9 @@ public sealed class RogueModTests
         NativeBootstrapTestCallbacks.WeakNullPropertyWritten = false;
         NativeBootstrapTestCallbacks.LazyPropertyWritten = false;
         NativeBootstrapTestCallbacks.LazyNullPropertyWritten = false;
+        NativeBootstrapTestCallbacks.SoftPropertyWritten = false;
+        NativeBootstrapTestCallbacks.ObjectCreated = false;
+        NativeBootstrapTestCallbacks.ActorSpawned = false;
 
         var assemblyPath = typeof(TestManagedMod).Assembly.Location;
         var modsRoot = Path.Combine(directory.Path, "Mods");
@@ -667,8 +670,8 @@ public sealed class RogueModTests
                 UnrealFindAllOf = &NativeBootstrapTestCallbacks.UnrealFindAllOf,
                 UnrealRegisterHook = &NativeBootstrapTestCallbacks.UnrealRegisterHook,
                 UnrealUnregisterHook = &NativeBootstrapTestCallbacks.UnrealUnregisterHook,
-                UnrealCreateObject = null,
-                UnrealSpawnActor = null
+                UnrealCreateObject = &NativeBootstrapTestCallbacks.UnrealCreateObject,
+                UnrealSpawnActor = &NativeBootstrapTestCallbacks.UnrealSpawnActor
             };
             delegate* unmanaged[Cdecl]<nint, int> initialize = &NativeBootstrap.Initialize;
             delegate* unmanaged[Cdecl]<int, int> dispatchGameEvent = &NativeBootstrap.DispatchGameEvent;
@@ -709,6 +712,12 @@ public sealed class RogueModTests
             Assert(NativeBootstrapTestCallbacks.LazyNullPropertyWritten, "A null lazy UObject property was not written.");
             Assert(NativeBootstrapTestCallbacks.LazyPropertyWritten, "An identity-bearing lazy UObject property was not restored.");
             Assert(NativeBootstrapTestCallbacks.Messages.Contains("[C#:sample.mod] lazy:11111111-22222222-33333333-44444444:/Test/PlayerController"), "Lazy UObject UFunction input and return values were not marshalled.");
+            Assert(NativeBootstrapTestCallbacks.Messages.Contains("[C#:sample.mod] soft:/Game/Test/ManagedAbi.ManagedAbi:/Test/PlayerController"), "Soft UObject property path and cached target were not marshalled.");
+            Assert(NativeBootstrapTestCallbacks.SoftPropertyWritten, "A soft UObject property was not round-tripped.");
+            Assert(NativeBootstrapTestCallbacks.Messages.Contains("[C#:sample.mod] created:000000070000002B"), "Managed object creation did not reach the native ABI.");
+            Assert(NativeBootstrapTestCallbacks.ObjectCreated, "Managed object creation arguments were not forwarded correctly.");
+            Assert(NativeBootstrapTestCallbacks.Messages.Contains("[C#:sample.mod] spawned:000000070000002C"), "Managed actor spawning did not reach the native ABI.");
+            Assert(NativeBootstrapTestCallbacks.ActorSpawned, "Managed actor spawning arguments were not forwarded correctly.");
             Assert(NativeBootstrapTestCallbacks.Messages.Contains("[ManagedRuntime] Managed runtime initialized. Loaded 1 mod(s)."), "Initialization was not logged.");
             Assert(dispatchGameEvent((int)ModGameEventKind.ProgramStarted) == 0, "Game event was rejected.");
             Assert(NativeBootstrapTestCallbacks.Messages.Contains("[C#:sample.mod] event:ProgramStarted"), "Game event did not reach the managed mod.");
@@ -755,6 +764,12 @@ public sealed class RogueModTests
 
     static void JMapImportsAndGeneratesTypedSdk()
     {
+        var softReference = UnrealSoftObjectReference<UnrealObject>.FromPath("/Game/Test/Asset.Asset");
+        Assert(softReference.Path == "/Game/Test/Asset.Asset" && softReference.CachedTarget is null,
+            "Typed soft reference construction did not preserve an unloaded asset path.");
+        Assert(softReference.ToUnrealValue().As<UnrealSoftObjectValue>().Path == softReference.Path,
+            "Typed soft reference construction did not produce the native transport value.");
+
         using var directory = new TemporaryDirectory();
         var jmapPath = Path.Combine(directory.Path, "fixture.jmap");
         File.WriteAllText(jmapPath, """
@@ -786,7 +801,7 @@ public sealed class RogueModTests
             "/Game/Test.BP_Player_C": {
               "type": "Class",
               "super_struct": "/Script/Engine.Actor",
-              "children": ["/Game/Test.BP_Player_C:SetHealth", "/Game/Test.BP_Player_C:GetHealth", "/Game/Test.BP_Player_C:SetPlayerName", "/Game/Test.BP_Player_C:SetLocation", "/Game/Test.BP_Player_C:GetLocation", "/Game/Test.BP_Player_C:EchoText", "/Game/Test.BP_Player_C:EchoNumbers", "/Game/Test.BP_Player_C:EchoNumberGroups", "/Game/Test.BP_Player_C:EchoOptional", "/Game/Test.BP_Player_C:EchoWeak", "/Game/Test.BP_Player_C:EchoLazy"],
+              "children": ["/Game/Test.BP_Player_C:SetHealth", "/Game/Test.BP_Player_C:GetHealth", "/Game/Test.BP_Player_C:SetPlayerName", "/Game/Test.BP_Player_C:SetLocation", "/Game/Test.BP_Player_C:GetLocation", "/Game/Test.BP_Player_C:EchoText", "/Game/Test.BP_Player_C:EchoNumbers", "/Game/Test.BP_Player_C:EchoNumberGroups", "/Game/Test.BP_Player_C:EchoOptional", "/Game/Test.BP_Player_C:EchoWeak", "/Game/Test.BP_Player_C:EchoLazy", "/Game/Test.BP_Player_C:EchoSoft"],
               "properties": [
                 { "name": "Health", "type": "FloatProperty", "offset": 256, "array_dim": 1, "size": 4, "flags": "CPF_Edit | CPF_BlueprintVisible" },
                 { "name": "Target", "type": "ObjectProperty", "property_class": "/Script/Engine.Actor", "offset": 264, "array_dim": 1, "size": 8, "flags": "CPF_BlueprintVisible" },
@@ -798,7 +813,8 @@ public sealed class RogueModTests
                 { "name": "ScoreGroups", "type": "ArrayProperty", "offset": 360, "array_dim": 1, "size": 16, "inner": { "name": "ScoreGroups", "type": "ArrayProperty", "offset": 0, "array_dim": 1, "size": 16, "inner": { "name": "ScoreGroup", "type": "IntProperty", "offset": 0, "array_dim": 1, "size": 4, "flags": "CPF_IsPlainOldData | CPF_NoDestructor" }, "flags": "CPF_ZeroConstructor" }, "flags": "CPF_BlueprintVisible | CPF_ZeroConstructor" },
                 { "name": "PreferredScore", "type": "OptionalProperty", "offset": 376, "array_dim": 1, "size": 8, "inner": { "name": "PreferredScore", "type": "IntProperty", "offset": 0, "array_dim": 1, "size": 4, "flags": "CPF_IsPlainOldData | CPF_NoDestructor" }, "flags": "CPF_Edit | CPF_BlueprintVisible | CPF_ZeroConstructor" },
                 { "name": "WeakTarget", "type": "WeakObjectProperty", "property_class": "/Script/Engine.Actor", "offset": 384, "array_dim": 1, "size": 8, "flags": "CPF_Edit | CPF_BlueprintVisible | CPF_UObjectWrapper" },
-                { "name": "LazyTarget", "type": "LazyObjectProperty", "property_class": "/Script/Engine.Actor", "offset": 392, "array_dim": 1, "size": 24, "flags": "CPF_Edit | CPF_BlueprintVisible | CPF_UObjectWrapper" }
+                { "name": "LazyTarget", "type": "LazyObjectProperty", "property_class": "/Script/Engine.Actor", "offset": 392, "array_dim": 1, "size": 24, "flags": "CPF_Edit | CPF_BlueprintVisible | CPF_UObjectWrapper" },
+                { "name": "SoftTarget", "type": "SoftObjectProperty", "property_class": "/Script/Engine.Actor", "offset": 416, "array_dim": 1, "size": 40, "flags": "CPF_Edit | CPF_BlueprintVisible | CPF_UObjectWrapper" }
               ]
             },
             "/Game/Test.BP_Player_C:SetHealth": {
@@ -883,6 +899,14 @@ public sealed class RogueModTests
                 { "name": "Input", "type": "LazyObjectProperty", "property_class": "/Script/Engine.Actor", "offset": 0, "array_dim": 1, "size": 24, "flags": "CPF_Parm | CPF_UObjectWrapper" },
                 { "name": "ReturnValue", "type": "LazyObjectProperty", "property_class": "/Script/Engine.Actor", "offset": 24, "array_dim": 1, "size": 24, "flags": "CPF_Parm | CPF_OutParm | CPF_ReturnParm | CPF_UObjectWrapper" }
               ]
+            },
+            "/Game/Test.BP_Player_C:EchoSoft": {
+              "type": "Function",
+              "function_flags": "FUNC_Public | FUNC_BlueprintCallable | FUNC_BlueprintPure",
+              "properties": [
+                { "name": "Callback", "type": "SoftObjectProperty", "property_class": "/Script/Engine.Actor", "offset": 0, "array_dim": 1, "size": 40, "flags": "CPF_Parm | CPF_UObjectWrapper" },
+                { "name": "ReturnValue", "type": "SoftObjectProperty", "property_class": "/Script/Engine.Actor", "offset": 40, "array_dim": 1, "size": 40, "flags": "CPF_Parm | CPF_OutParm | CPF_ReturnParm | CPF_UObjectWrapper" }
+              ]
             }
           },
           "vtables": {}
@@ -892,7 +916,7 @@ public sealed class RogueModTests
         var model = new JMapImporter().Import(jmapPath);
         Assert(model.Metadata.EngineMajor == 5 && model.Metadata.EngineMinor == 6, "Engine version was not imported.");
         var player = model.Types.Single(type => type.Path == "/Game/Test.BP_Player_C");
-        Assert(player.Functions.Count == 11, "UFunctions were not attached to their class.");
+        Assert(player.Functions.Count == 12, "UFunctions were not attached to their class.");
 
         var output = Path.Combine(directory.Path, "sdk");
         var abstractionsProject = FindRepositoryFile("src/RogueMod.Abstractions/RogueMod.Abstractions.csproj");
@@ -916,6 +940,7 @@ public sealed class RogueModTests
         Assert(source.Contains("public UnrealOptional<int> PreferredScore", StringComparison.Ordinal), "Generated TOptional property is missing.");
         Assert(source.Contains("public Actor? WeakTarget", StringComparison.Ordinal), "Generated weak UObject property is missing.");
         Assert(source.Contains("public UnrealLazyObjectReference<Actor> LazyTarget", StringComparison.Ordinal), "Generated identity-preserving lazy UObject property is missing.");
+        Assert(source.Contains("public UnrealSoftObjectReference<Actor> SoftTarget", StringComparison.Ordinal), "Generated path-preserving soft UObject property is missing.");
         Assert(source.Contains("public void SetHealth(float newHealth)", StringComparison.Ordinal), "Generated void UFunction wrapper is missing.");
         Assert(source.Contains("public float GetHealth()", StringComparison.Ordinal), "Generated return value wrapper is missing.");
         Assert(source.Contains("public void SetPlayerName(string newName)", StringComparison.Ordinal), "Generated FString UFunction wrapper is missing.");
@@ -927,6 +952,8 @@ public sealed class RogueModTests
         Assert(source.Contains("public UnrealOptional<int> EchoOptional(UnrealOptional<int> input)", StringComparison.Ordinal), "Generated TOptional UFunction wrapper is missing.");
         Assert(source.Contains("public Actor? EchoWeak(Actor? input)", StringComparison.Ordinal), "Generated weak UObject UFunction wrapper is missing.");
         Assert(source.Contains("public UnrealLazyObjectReference<Actor> EchoLazy(UnrealLazyObjectReference<Actor> input)", StringComparison.Ordinal), "Generated lazy UObject UFunction wrapper is missing.");
+        Assert(source.Contains("public UnrealSoftObjectReference<Actor> EchoSoft(UnrealSoftObjectReference<Actor> callback)", StringComparison.Ordinal), "Generated soft UObject UFunction wrapper is missing.");
+        Assert(source.Contains("EchoSoftPreHookHandler(BP_Player context, ref UnrealSoftObjectReference<Actor> callback2)", StringComparison.Ordinal), "Generated hook parameter collided with its callback delegate.");
         Assert(source.Contains("public static IDisposable RegisterSetHealthPreHook", StringComparison.Ordinal),
             "Generated strongly typed pre-hook registration is missing.");
         Assert(source.Contains("callback, UnrealHookOptions options = default", StringComparison.Ordinal),

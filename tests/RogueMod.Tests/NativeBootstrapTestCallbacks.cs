@@ -19,6 +19,9 @@ internal static unsafe class NativeBootstrapTestCallbacks
     internal static bool WeakNullPropertyWritten;
     internal static bool LazyPropertyWritten;
     internal static bool LazyNullPropertyWritten;
+    internal static bool SoftPropertyWritten;
+    internal static bool ObjectCreated;
+    internal static bool ActorSpawned;
     internal static delegate* unmanaged[Cdecl]<ulong, ulong, int, uint, NativeUnrealParameter*, int> RegisteredHookCallback;
     internal static ulong RegisteredHookContext;
     internal static int RegisteredHookPhase;
@@ -58,7 +61,8 @@ internal static unsafe class NativeBootstrapTestCallbacks
     }
 
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
-    internal static int UnrealIsValid(ulong handle) => handle == 0x0000_0007_0000_002A ? 1 : 0;
+    internal static int UnrealIsValid(ulong handle) =>
+        handle is 0x0000_0007_0000_002A or 0x0000_0007_0000_002B or 0x0000_0007_0000_002C ? 1 : 0;
 
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     internal static ulong UnrealGetClass(ulong handle) => 0;
@@ -86,7 +90,34 @@ internal static unsafe class NativeBootstrapTestCallbacks
 
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     internal static uint UnrealGetCapabilities() =>
-        (1U << 0) | (1U << 1) | (1U << 2) | (1U << 3) | (1U << 4) | (1U << 5) | (1U << 6) | (1U << 7) | (1U << 8) | (1U << 9);
+        (1U << 0) | (1U << 1) | (1U << 2) | (1U << 3) | (1U << 4) | (1U << 5) | (1U << 6) | (1U << 7) | (1U << 8) | (1U << 9)
+        | (1U << 10) | (1U << 11) | (1U << 12);
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    internal static ulong UnrealCreateObject(ulong classHandle, ulong outerHandle, char* objectName)
+    {
+        ObjectCreated = classHandle == 0x0000_0007_0000_002A
+            && outerHandle == 0x0000_0007_0000_002A
+            && objectName != null
+            && new string(objectName) == "ManagedAbiObject";
+        return ObjectCreated ? 0x0000_0007_0000_002BUL : 0UL;
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    internal static ulong UnrealSpawnActor(
+        ulong contextObjectHandle,
+        ulong classHandle,
+        float* location,
+        float* rotation)
+    {
+        ActorSpawned = contextObjectHandle == 0x0000_0007_0000_002A
+            && classHandle == 0x0000_0007_0000_002A
+            && location != null
+            && rotation != null
+            && location[0] == 1.0f && location[1] == 2.0f && location[2] == 3.0f
+            && rotation[0] == 4.0f && rotation[1] == 5.0f && rotation[2] == 6.0f;
+        return ActorSpawned ? 0x0000_0007_0000_002CUL : 0UL;
+    }
 
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     internal static int UnrealRegisterHook(
@@ -215,6 +246,11 @@ internal static unsafe class NativeBootstrapTestCallbacks
             *value = AllocateLazyObjectValue();
             return 0;
         }
+        if (new string(propertyName) == "SoftController" && propertyKind == 21)
+        {
+            *value = AllocateSoftObjectValue();
+            return 0;
+        }
         if (new string(propertyName) != "bShouldPerformFullTickWhenPaused")
         {
             return -1;
@@ -307,6 +343,18 @@ internal static unsafe class NativeBootstrapTestCallbacks
             LazyPropertyWritten |= wire.SequenceEqual(CreateLazyObjectWire());
             LazyNullPropertyWritten |= wire.All(static item => item == 0);
             return 0;
+        }
+        if (handle == 0x0000_0007_0000_002A
+            && new string(propertyName) == "SoftController"
+            && propertyKind == 21
+            && value != null
+            && value->Kind == 21)
+        {
+            var (path, cachedHandle, storage) = ReadSoftObjectWire(*value);
+            SoftPropertyWritten = path == "/Game/Test/ManagedAbi.ManagedAbi"
+                && cachedHandle == 0x0000_0007_0000_002A
+                && storage.SequenceEqual(CreateSoftObjectStorage());
+            return SoftPropertyWritten ? 0 : -1;
         }
         PropertyWritten = handle == 0x0000_0007_0000_002A
             && new string(propertyName) == "bShouldPerformFullTickWhenPaused"
@@ -571,6 +619,36 @@ internal static unsafe class NativeBootstrapTestCallbacks
         Marshal.Copy(unchecked((nint)value.Data), wire, 0, wire.Length);
         return wire;
     }
+
+    private static NativeUnrealValue AllocateSoftObjectValue()
+    {
+        const string path = "/Game/Test/ManagedAbi.ManagedAbi";
+        var pathPointer = Marshal.StringToCoTaskMemUni(path);
+        var wirePointer = Marshal.AllocCoTaskMem(56);
+        var storage = CreateSoftObjectStorage();
+        Marshal.Copy(storage, 0, wirePointer, storage.Length);
+        Marshal.WriteInt64(wirePointer, 40, unchecked((long)0x0000_0007_0000_002A));
+        Marshal.WriteIntPtr(wirePointer, 48, pathPointer);
+        return new NativeUnrealValue { Kind = 21, Reserved = 56, Data = unchecked((ulong)wirePointer) };
+    }
+
+    private static (string Path, ulong CachedHandle, byte[] Storage) ReadSoftObjectWire(NativeUnrealValue value)
+    {
+        if (value.Kind != 21 || value.Reserved != 56 || value.Data == 0)
+        {
+            return (string.Empty, 0, []);
+        }
+        var wirePointer = unchecked((nint)value.Data);
+        var storage = new byte[40];
+        Marshal.Copy(wirePointer, storage, 0, storage.Length);
+        var cachedHandle = unchecked((ulong)Marshal.ReadInt64(wirePointer, 40));
+        var pathPointer = Marshal.ReadIntPtr(wirePointer, 48);
+        var path = pathPointer == nint.Zero ? string.Empty : Marshal.PtrToStringUni(pathPointer) ?? string.Empty;
+        return (path, cachedHandle, storage);
+    }
+
+    private static byte[] CreateSoftObjectStorage() =>
+        Enumerable.Range(0, 40).Select(static value => checked((byte)(value + 1))).ToArray();
 
     private static NativeUnrealValue AllocateOptionalIntValue(int value)
     {

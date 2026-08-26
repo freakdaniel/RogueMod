@@ -8,23 +8,30 @@
 #include <iostream>
 #include <memory>
 #include <new>
-#include <stdexcept>
 #include <vector>
 
 namespace
 {
     constexpr std::uint32_t name_kind = 14;
+    constexpr std::size_t object_setter_offset = sizeof(void*);
+    constexpr std::size_t object_getter_offset = sizeof(void*) * 2;
 
     struct FakeProperty
     {
         bool is_array;
     };
 
+    enum class ObjectSetterMode
+    {
+        Normal,
+        CorruptTarget,
+        CorruptAlways
+    };
+
     struct FakeObjectProperty
     {
         void** vtable{};
-        bool reject_generic_assignment{};
-        void* logical_override{};
+        ObjectSetterMode mode{};
     };
 
     struct FakeScriptArray
@@ -67,29 +74,35 @@ namespace
         return std::malloc(size);
     }
 
-    void* __cdecl get_object_value(const void* property, const void* address)
+    void* __cdecl get_object_value(const void*, const void* address)
     {
-        const auto& fake_property = *static_cast<const FakeObjectProperty*>(property);
-        if (fake_property.logical_override != nullptr)
-        {
-            return fake_property.logical_override;
-        }
         return *static_cast<void* const*>(address);
     }
 
-    void __cdecl set_object_value(const void* property, void* address, void* value)
+    void __cdecl set_object_value(
+        const void* property,
+        void* address,
+        void* const* value_reference)
     {
         const auto& fake_property = *static_cast<const FakeObjectProperty*>(property);
-        if (fake_property.reject_generic_assignment)
+        auto* value = *value_reference;
+        if (fake_property.mode == ObjectSetterMode::CorruptAlways
+            || (fake_property.mode == ObjectSetterMode::CorruptTarget
+                && value == reinterpret_cast<void*>(2)))
         {
-            throw std::runtime_error("generic object setter rejected");
+            value = reinterpret_cast<void*>(3);
         }
         *static_cast<void**>(address) = value;
     }
 
-    void __cdecl set_typed_object_value(void* address, const void* value_reference)
+    bool __cdecl validate_object_accessors(const void*, const void*)
     {
-        *static_cast<void**>(address) = *static_cast<void* const*>(value_reference);
+        return true;
+    }
+
+    bool __cdecl reject_object_accessors(const void*, const void*)
+    {
+        return false;
     }
 
     FakeScriptArray make_array(std::initializer_list<std::uint64_t> values)
@@ -122,17 +135,26 @@ namespace
         return std::equal(expected.begin(), expected.end(), data);
     }
 
-    std::unique_ptr<RogueMod::UnrealMutationBackend> create_backend()
+    std::unique_ptr<RogueMod::UnrealMutationBackend> create_backend(bool valid_accessors = true)
     {
         auto backend = std::make_unique<RogueMod::UnrealMutationBackend>();
         backend->configure({
             initialize_value,
             destroy_value,
             memory_malloc,
-            get_object_value,
-            set_object_value,
-            set_typed_object_value});
+            object_setter_offset,
+            object_getter_offset,
+            valid_accessors ? validate_object_accessors : reject_object_accessors});
         return backend;
+    }
+
+    FakeObjectProperty make_object_property(ObjectSetterMode mode = ObjectSetterMode::Normal)
+    {
+        static void* vtable[3]{
+            nullptr,
+            reinterpret_cast<void*>(&set_object_value),
+            reinterpret_cast<void*>(&get_object_value)};
+        return {vtable, mode};
     }
 
     RogueMod::UnrealValue make_wire_array(std::vector<RogueMod::UnrealValue>& elements)
@@ -222,9 +244,18 @@ namespace
         return passed;
     }
 
-    bool test_object_assignment_writes_raw_pointer()
+    bool test_object_read_uses_validated_getter()
     {
-        FakeObjectProperty object_property{};
+        auto object_property = make_object_property();
+        auto* destination = reinterpret_cast<void*>(1);
+        void* value{};
+        return create_backend()->try_read_object(&object_property, &destination, value)
+            && value == destination;
+    }
+
+    bool test_object_assignment_uses_tobjectptr_setter()
+    {
+        auto object_property = make_object_property();
         auto* destination = reinterpret_cast<void*>(1);
         const auto result = create_backend()->try_assign_object(
             &object_property,
@@ -234,12 +265,28 @@ namespace
             && destination == reinterpret_cast<void*>(2);
     }
 
-    bool test_object_assignment_supports_null_target()
+    bool test_object_assignment_mismatch_restores_original()
     {
-        FakeObjectProperty object_property{};
+        auto object_property = make_object_property(ObjectSetterMode::CorruptTarget);
         auto* destination = reinterpret_cast<void*>(1);
-        const auto result = create_backend()->try_assign_object(&object_property, &destination, nullptr);
-        return result == RogueMod::MutationAttempt::Succeeded && destination == nullptr;
+        const auto result = create_backend()->try_assign_object(
+            &object_property,
+            &destination,
+            reinterpret_cast<void*>(2));
+        return result == RogueMod::MutationAttempt::Failed
+            && destination == reinterpret_cast<void*>(1);
+    }
+
+    bool test_object_assignment_rejects_unvalidated_accessor()
+    {
+        auto object_property = make_object_property();
+        auto* destination = reinterpret_cast<void*>(1);
+        const auto result = create_backend(false)->try_assign_object(
+            &object_property,
+            &destination,
+            reinterpret_cast<void*>(2));
+        return result == RogueMod::MutationAttempt::Unsupported
+            && destination == reinterpret_cast<void*>(1);
     }
 }
 
@@ -260,14 +307,24 @@ int main()
         std::cerr << "clear replacement test failed\n";
         return 1;
     }
-    if (!test_object_assignment_writes_raw_pointer())
+    if (!test_object_read_uses_validated_getter())
     {
-        std::cerr << "raw object assignment test failed\n";
+        std::cerr << "validated object getter test failed\n";
         return 1;
     }
-    if (!test_object_assignment_supports_null_target())
+    if (!test_object_assignment_uses_tobjectptr_setter())
     {
-        std::cerr << "raw null object assignment test failed\n";
+        std::cerr << "TObjectPtr setter test failed\n";
+        return 1;
+    }
+    if (!test_object_assignment_mismatch_restores_original())
+    {
+        std::cerr << "object setter restoration test failed\n";
+        return 1;
+    }
+    if (!test_object_assignment_rejects_unvalidated_accessor())
+    {
+        std::cerr << "unvalidated object accessor rejection test failed\n";
         return 1;
     }
     return 0;

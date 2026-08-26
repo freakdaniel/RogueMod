@@ -52,6 +52,38 @@ namespace RogueMod
         {
             return static_cast<UnrealPropertyKind>(encoded_kind & property_kind_mask);
         }
+
+        using ObjectPtrSetter = void(__cdecl*)(const void*, void*, void* const*);
+        using ObjectGetter = void*(__cdecl*)(const void*, const void*);
+
+        bool resolve_object_accessors(
+            const UnrealMutationBackend::Exports& exports,
+            void* property,
+            ObjectPtrSetter& setter,
+            ObjectGetter& getter)
+        {
+            if (property == nullptr
+                || exports.object_ptr_setter_vtable_offset == 0
+                || exports.object_getter_vtable_offset == 0
+                || exports.validate_object_accessors == nullptr)
+            {
+                return false;
+            }
+
+            const auto* vtable = *static_cast<void***>(property);
+            if (vtable == nullptr)
+            {
+                return false;
+            }
+            setter = reinterpret_cast<ObjectPtrSetter>(
+                vtable[exports.object_ptr_setter_vtable_offset / sizeof(void*)]);
+            getter = reinterpret_cast<ObjectGetter>(
+                vtable[exports.object_getter_vtable_offset / sizeof(void*)]);
+            return setter != nullptr && getter != nullptr
+                && exports.validate_object_accessors(
+                    reinterpret_cast<const void*>(setter),
+                    reinterpret_cast<const void*>(getter));
+        }
     }
 
     void UnrealMutationBackend::configure(Exports exports)
@@ -66,35 +98,90 @@ namespace RogueMod
             && m_exports.memory_malloc != nullptr;
     }
 
+    bool UnrealMutationBackend::can_access_objects() const
+    {
+        return m_exports.object_ptr_setter_vtable_offset != 0
+            && m_exports.object_getter_vtable_offset != 0
+            && m_exports.validate_object_accessors != nullptr;
+    }
+
+    bool UnrealMutationBackend::try_read_object(
+        void* property,
+        const void* address,
+        void*& target) const
+    {
+        target = nullptr;
+        if (address == nullptr)
+        {
+            return false;
+        }
+        ObjectPtrSetter setter{};
+        ObjectGetter getter{};
+        if (!resolve_object_accessors(m_exports, property, setter, getter))
+        {
+            return false;
+        }
+        target = getter(property, address);
+        return true;
+    }
+
     MutationAttempt UnrealMutationBackend::try_assign_object(
         void* property,
         void* address,
         void* target) const
     {
-        if (property == nullptr || address == nullptr)
+        if (address == nullptr)
         {
             return MutationAttempt::Failed;
         }
-
-        std::uint64_t original_raw{};
-        std::memcpy(&original_raw, address, sizeof(original_raw));
-        const auto target_raw = static_cast<std::uint64_t>(
-            reinterpret_cast<std::uintptr_t>(target));
-
-        std::memcpy(address, &target_raw, sizeof(target_raw));
-        std::uint64_t after_raw{};
-        std::memcpy(&after_raw, address, sizeof(after_raw));
-        if (after_raw == target_raw)
+        ObjectPtrSetter setter{};
+        ObjectGetter getter{};
+        if (!resolve_object_accessors(m_exports, property, setter, getter))
         {
-            return MutationAttempt::Succeeded;
+            return MutationAttempt::Unsupported;
         }
 
-        std::memcpy(address, &original_raw, sizeof(original_raw));
-        std::uint64_t restored_raw{};
-        std::memcpy(&restored_raw, address, sizeof(restored_raw));
-        return restored_raw == original_raw
-            ? MutationAttempt::Failed
-            : MutationAttempt::RestorationFailed;
+        const auto original = getter(property, address);
+        try
+        {
+            auto* temporary = target;
+            setter(property, address, &temporary);
+            const auto written = getter(property, address);
+            if (written == target)
+            {
+                return MutationAttempt::Succeeded;
+            }
+            if (written == original)
+            {
+                return MutationAttempt::Failed;
+            }
+
+            temporary = original;
+            setter(property, address, &temporary);
+            return getter(property, address) == original
+                ? MutationAttempt::Failed
+                : MutationAttempt::RestorationFailed;
+        }
+        catch (...)
+        {
+            const auto current = getter(property, address);
+            if (current == original)
+            {
+                return MutationAttempt::Failed;
+            }
+            try
+            {
+                auto* temporary = original;
+                setter(property, address, &temporary);
+                return getter(property, address) == original
+                    ? MutationAttempt::Failed
+                    : MutationAttempt::RestorationFailed;
+            }
+            catch (...)
+            {
+                return MutationAttempt::RestorationFailed;
+            }
+        }
     }
 
     MutationAttempt UnrealMutationBackend::try_replace_name_array(

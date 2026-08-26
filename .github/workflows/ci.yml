@@ -55,8 +55,11 @@ jobs:
       - name: Configure native build
         run: cmake -S src/RogueMod.Native -B .build/native/windows-msvc -A x64 -DROGUEMOD_BUILD_SAMPLES=ON
 
-      - name: Build native bridge and sample
-        run: cmake --build .build/native/windows-msvc --config Release --target RogueModBridge PackageHelloNativeMod --parallel
+      - name: Build native bridge, tests, and sample
+        run: cmake --build .build/native/windows-msvc --config Release --target RogueModBridge RogueModMutationBackendTests PackageHelloNativeMod --parallel
+
+      - name: Test native mutation backend
+        run: ctest --test-dir .build/native/windows-msvc --build-config Release --output-on-failure
 
       - name: Package Windows and Proton runtime
         shell: pwsh

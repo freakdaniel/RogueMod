@@ -399,9 +399,9 @@ public sealed class UnrealLazyObjectReference<T> where T : UnrealObject
 }
 
 /// <summary>
-/// Transport for an Unreal TSoftObjectPtr / FSoftObjectPath value: the asset path plus the
-/// weak target already cached by Unreal (null when the path is not loaded). Native storage
-/// preserves the complete 40-byte value for identity-safe writes.
+/// Transport for an Unreal TSoftObjectPtr value: the persistent asset path plus an optional
+/// already-cached target. The native storage field is ABI-reserved and opaque; writes are
+/// rebuilt from <see cref="Path"/> by the game's Kismet APIs and never replay these bytes.
 /// </summary>
 public sealed class UnrealSoftObjectValue
 {
@@ -455,6 +455,21 @@ public sealed class UnrealSoftObjectReference<T> where T : UnrealObject
 
     public static UnrealSoftObjectReference<T> Null { get; } =
         new(new UnrealSoftObjectValue(string.Empty, UnrealObjectHandle.Null, new byte[UnrealSoftObjectValue.NativeStorageSize]), null);
+
+    /// <summary>
+    /// Creates an unloaded soft reference from its persistent Unreal asset path.
+    /// This does not load or resolve the referenced object.
+    /// </summary>
+    public static UnrealSoftObjectReference<T> FromPath(string path)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        return new UnrealSoftObjectReference<T>(
+            new UnrealSoftObjectValue(
+                path,
+                UnrealObjectHandle.Null,
+                new byte[UnrealSoftObjectValue.NativeStorageSize]),
+            null);
+    }
 
     public UnrealValue ToUnrealValue() => UnrealValue.From(transported);
 

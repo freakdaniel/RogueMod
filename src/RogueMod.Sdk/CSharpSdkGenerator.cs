@@ -357,12 +357,12 @@ public sealed class CSharpSdkGenerator
             builder.Append("        get => ").Append(type.Name).Append(".FromUnrealValue(ReadValue(")
                 .Append(descriptorName).AppendLine("));");
         }
-        else if (type.ArrayAdapter || type.OptionalAdapter || type.LazyObjectAdapter)
+        else if (type.ArrayAdapter || type.OptionalAdapter || type.LazyObjectAdapter || type.SoftObjectAdapter)
         {
             builder.Append("        get => ").Append(ReadValueExpression(
                 type,
                 $"ReadValue({descriptorName})",
-                type.LazyObjectAdapter ? null : ValueDescriptorExpression(type, descriptorName))).AppendLine(";");
+                type.LazyObjectAdapter || type.SoftObjectAdapter ? null : ValueDescriptorExpression(type, descriptorName))).AppendLine(";");
         }
         else
         {
@@ -375,10 +375,10 @@ public sealed class CSharpSdkGenerator
             {
                 builder.Append("        set => WriteValue(").Append(descriptorName).AppendLine(", value.ToUnrealValue());");
             }
-            else if (type.ArrayAdapter || type.OptionalAdapter || type.LazyObjectAdapter)
+            else if (type.ArrayAdapter || type.OptionalAdapter || type.LazyObjectAdapter || type.SoftObjectAdapter)
             {
                 builder.Append("        set => WriteValue(").Append(descriptorName).Append(", ")
-                    .Append(type.LazyObjectAdapter
+                    .Append(type.LazyObjectAdapter || type.SoftObjectAdapter
                         ? "value.ToUnrealValue()"
                         : WriteValueExpression(type, "value", ValueDescriptorExpression(type, descriptorName)))
                     .AppendLine(");");
@@ -478,7 +478,7 @@ public sealed class CSharpSdkGenerator
             var expression = type.ObjectWrapper
                 ? $"UnrealValue.From({value}?.Handle ?? UnrealObjectHandle.Null)"
                 : type.StructAdapter ? $"{value}.ToUnrealValue()"
-                : type.LazyObjectAdapter ? $"{value}.ToUnrealValue()"
+                : type.LazyObjectAdapter || type.SoftObjectAdapter ? $"{value}.ToUnrealValue()"
                 : type.ArrayAdapter || type.OptionalAdapter
                     ? WriteValueExpression(
                         type,
@@ -558,7 +558,7 @@ public sealed class CSharpSdkGenerator
         var postMethodName = Identifier("Register" + safeMethodName + "PostHook");
 
         var preParts = new List<string> { $"{ownerTypeName} context" };
-        var usedPreNames = new HashSet<string>(StringComparer.Ordinal) { "context" };
+        var usedPreNames = new HashSet<string>(StringComparer.Ordinal) { "context", "callback" };
         var preParameters = inputs.Select(input =>
         {
             var type = ResolveType(input.Type, input.ArrayDimension, typeNames, supportedStructPaths);
@@ -567,7 +567,7 @@ public sealed class CSharpSdkGenerator
         preParts.AddRange(preParameters.Select(parameter => $"ref {parameter.Type.Name} {parameter.Name}"));
 
         var postParts = new List<string> { $"{ownerTypeName} context" };
-        var usedPostNames = new HashSet<string>(StringComparer.Ordinal) { "context", "returnValue" };
+        var usedPostNames = new HashSet<string>(StringComparer.Ordinal) { "context", "returnValue", "callback" };
         (UnrealSdkProperty Property, CsType Type, string Name)? postReturn = null;
         if (returnParameter is not null)
         {

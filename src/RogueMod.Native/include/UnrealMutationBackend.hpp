@@ -24,9 +24,9 @@ namespace RogueMod
             void(__cdecl* initialize_value)(const void* property, void* address){};
             void(__cdecl* destroy_value)(const void* property, void* address){};
             void*(__cdecl* memory_malloc)(std::size_t size, std::uint32_t alignment){};
-            void*(__cdecl* get_object_value)(const void* property, const void* address){};
-            void(__cdecl* set_object_value)(const void* property, void* address, void* value){};
-            void(__cdecl* typed_set_object_value)(void* address, const void* value_reference){};
+            std::size_t object_ptr_setter_vtable_offset{};
+            std::size_t object_getter_vtable_offset{};
+            bool(__cdecl* validate_object_accessors)(const void* setter, const void* getter){};
             void(__cdecl* log)(std::int32_t level, const wchar_t* message){};
         };
 
@@ -39,6 +39,12 @@ namespace RogueMod
         void configure(Exports exports);
 
         [[nodiscard]] bool is_available() const;
+        [[nodiscard]] bool can_access_objects() const;
+
+        [[nodiscard]] bool try_read_object(
+            void* property,
+            const void* address,
+            void*& target) const;
 
         [[nodiscard]] MutationAttempt try_assign_object(
             void* property,
