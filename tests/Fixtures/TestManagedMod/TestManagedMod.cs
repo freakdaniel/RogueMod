@@ -58,6 +58,8 @@ public sealed class TestManagedMod : IRogueMod, IRogueModGameEvents
                     _logger.Log(ModLogLevel.Information, $"property:ScoresByName={FormatMap(scoresByName)}");
                     var uniqueScores = playerController.UniqueScores;
                     _logger.Log(ModLogLevel.Information, $"property:UniqueScores={string.Join(',', uniqueScores)}");
+                    playerController.ScoresByName = scoresByName;
+                    playerController.UniqueScores = uniqueScores;
                 }
                 var optionalScore = playerController.OptionalScore;
                 _logger.Log(ModLogLevel.Information, $"property:OptionalScore={FormatOptional(optionalScore)}");
@@ -405,6 +407,13 @@ public sealed class TestManagedMod : IRogueMod, IRogueModGameEvents
                 ReadValue(ScoresByNameProperty),
                 key => key.As<int>(),
                 value => value.As<string>());
+            set => WriteValue(
+                ScoresByNameProperty,
+                UnrealMapValue.From(
+                    ScoresByNameProperty.Map!,
+                    value,
+                    key => UnrealValue.From(key),
+                    text => UnrealValue.From(text)));
         }
 
         public IReadOnlySet<int> UniqueScores
@@ -412,6 +421,12 @@ public sealed class TestManagedMod : IRogueMod, IRogueModGameEvents
             get => UnrealSetValue.ToSet<int>(
                 ReadValue(UniqueScoresProperty),
                 value => value.As<int>());
+            set => WriteValue(
+                UniqueScoresProperty,
+                UnrealSetValue.From(
+                    UniqueScoresProperty.Set!,
+                    value,
+                    element => UnrealValue.From(element)));
         }
 
         public UnrealOptional<int> OptionalScore

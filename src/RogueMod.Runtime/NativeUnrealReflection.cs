@@ -610,6 +610,11 @@ internal sealed unsafe class NativeUnrealReflection(
 
         var kind = GetPropertyKind(property.UnrealType, property.Size);
         EnsurePropertyCapabilities(kind, property.Array, property.Optional, property.Map, property.Set);
+        if (kind is NativePropertyKind.Map or NativePropertyKind.Set
+            && (Capabilities & UnrealReflectionCapabilities.MapSetWrites) == 0)
+        {
+            throw new NotSupportedException("The active RogueMod bridge does not support TMap/TSet writes.");
+        }
         var encodedKind = EncodePropertyKind(kind, property.Array, property.Optional, property.Map, property.Set);
         using var inputAllocations = new NativeAllocations();
         var nativeValue = ToNativeValue(
@@ -646,10 +651,21 @@ internal sealed unsafe class NativeUnrealReflection(
         NativeAllocations allocations)
     {
         var managed = value.Value;
-        if (kind is NativePropertyKind.Map or NativePropertyKind.Set)
+        if (kind == NativePropertyKind.Map)
         {
-            throw new NotSupportedException(
-                $"RogueMod does not yet support writing Unreal {(kind == NativePropertyKind.Map ? "TMap" : "TSet")} values.");
+            return WriteNativeMap(
+                encodedKind,
+                value,
+                RequireMapDescriptor(mapDescriptor),
+                allocations);
+        }
+        if (kind == NativePropertyKind.Set)
+        {
+            return WriteNativeSet(
+                encodedKind,
+                value,
+                RequireSetDescriptor(setDescriptor),
+                allocations);
         }
         if (kind is NativePropertyKind.String or NativePropertyKind.Name or NativePropertyKind.Text)
         {
@@ -678,21 +694,11 @@ internal sealed unsafe class NativeUnrealReflection(
 
         if (kind == NativePropertyKind.Struct)
         {
-            var descriptor = RequireStructDescriptor(structDescriptor);
-            if (managed is not UnrealStructValue structValue)
-            {
-                throw new InvalidCastException(
-                    $"Unreal struct '{descriptor.Path}' requires an UnrealStructValue, not " +
-                    $"'{value.Value?.GetType().FullName ?? "null"}'.");
-            }
-            var bytes = SerializeStruct(descriptor, structValue);
-            var pointer = allocations.AddBytes(bytes);
-            return new NativeUnrealValue
-            {
-                Kind = encodedKind,
-                Reserved = (uint)bytes.Length,
-                Data = unchecked((ulong)pointer)
-            };
+            return WriteNativeStruct(
+                encodedKind,
+                value,
+                RequireStructDescriptor(structDescriptor),
+                allocations);
         }
 
         if (kind == NativePropertyKind.Array)
@@ -863,6 +869,124 @@ internal sealed unsafe class NativeUnrealReflection(
         {
             Kind = encodedKind,
             Reserved = checked((uint)arrayValue.Elements.Count),
+            Data = unchecked((ulong)values)
+        };
+    }
+
+    private static NativeUnrealValue WriteNativeSet(
+        uint encodedKind,
+        UnrealValue value,
+        UnrealSetDescriptor descriptor,
+        NativeAllocations allocations)
+    {
+        if (value.Value is not UnrealSetValue setValue)
+        {
+            throw new InvalidCastException(
+                $"Unreal TSet<{descriptor.ElementUnrealType}> requires an UnrealSetValue, not " +
+                $"'{value.Value?.GetType().FullName ?? "null"}'.");
+        }
+        if (!SetDescriptorsMatch(setValue.Descriptor, descriptor))
+        {
+            throw new InvalidCastException(
+                $"Unreal set element '{setValue.Descriptor.ElementUnrealType}' cannot be written as " +
+                $"'{descriptor.ElementUnrealType}'.");
+        }
+        if (setValue.Elements.Count > MaximumArrayLength)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(value),
+                $"Unreal sets cannot exceed {MaximumArrayLength} elements.");
+        }
+        if (setValue.Elements.Count == 0)
+        {
+            return new NativeUnrealValue { Kind = encodedKind };
+        }
+
+        var elementKind = GetPropertyKind(descriptor.ElementUnrealType, descriptor.ElementSize);
+        var encodedElementKind = EncodePropertyKind(elementKind, descriptor.ElementArray);
+        var values = allocations.AddValues(setValue.Elements.Count);
+        for (var index = 0; index < setValue.Elements.Count; index++)
+        {
+            values[index] = ToNativeValue(
+                elementKind,
+                encodedElementKind,
+                setValue.Elements[index],
+                descriptor.ElementStruct,
+                descriptor.ElementArray,
+                null,
+                null,
+                null,
+                allocations);
+        }
+        return new NativeUnrealValue
+        {
+            Kind = encodedKind,
+            Reserved = checked((uint)setValue.Elements.Count),
+            Data = unchecked((ulong)values)
+        };
+    }
+
+    private static NativeUnrealValue WriteNativeMap(
+        uint encodedKind,
+        UnrealValue value,
+        UnrealMapDescriptor descriptor,
+        NativeAllocations allocations)
+    {
+        if (value.Value is not UnrealMapValue mapValue)
+        {
+            throw new InvalidCastException(
+                $"Unreal TMap<{descriptor.KeyUnrealType}, {descriptor.ValueUnrealType}> requires an UnrealMapValue, not " +
+                $"'{value.Value?.GetType().FullName ?? "null"}'.");
+        }
+        if (!MapDescriptorsMatch(mapValue.Descriptor, descriptor))
+        {
+            throw new InvalidCastException(
+                $"Unreal map '{mapValue.Descriptor.KeyUnrealType}, {mapValue.Descriptor.ValueUnrealType}' cannot be written as " +
+                $"'{descriptor.KeyUnrealType}, {descriptor.ValueUnrealType}'.");
+        }
+        if (mapValue.Entries.Count > MaximumArrayLength)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(value),
+                $"Unreal maps cannot exceed {MaximumArrayLength} entries.");
+        }
+        if (mapValue.Entries.Count == 0)
+        {
+            return new NativeUnrealValue { Kind = encodedKind };
+        }
+
+        var keyKind = GetPropertyKind(descriptor.KeyUnrealType, descriptor.KeySize);
+        var valueKind = GetPropertyKind(descriptor.ValueUnrealType, descriptor.ValueSize);
+        var encodedValueKind = EncodePropertyKind(valueKind, descriptor.ValueArray);
+        var values = allocations.AddValues(mapValue.Entries.Count * 2);
+        for (var index = 0; index < mapValue.Entries.Count; index++)
+        {
+            var entry = mapValue.Entries[index];
+            values[index * 2] = ToNativeValue(
+                keyKind,
+                (uint)keyKind,
+                entry.Key,
+                descriptor.KeyStruct,
+                null,
+                null,
+                null,
+                null,
+                allocations);
+            values[index * 2 + 1] = ToNativeValue(
+                valueKind,
+                encodedValueKind,
+                entry.Value,
+                descriptor.ValueStruct,
+                descriptor.ValueArray,
+                null,
+                null,
+                null,
+                allocations);
+        }
+        return new NativeUnrealValue
+        {
+            Kind = encodedKind,
+            Reserved = checked((uint)mapValue.Entries.Count),
             Data = unchecked((ulong)values)
         };
     }
@@ -1155,6 +1279,43 @@ internal sealed unsafe class NativeUnrealReflection(
             _ => false
         };
 
+    private static bool SetDescriptorsMatch(UnrealSetDescriptor left, UnrealSetDescriptor right) =>
+        StringComparer.Ordinal.Equals(left.ElementUnrealType, right.ElementUnrealType)
+        && left.ElementSize == right.ElementSize
+        && left.ElementByteOffset == right.ElementByteOffset
+        && left.ElementByteMask == right.ElementByteMask
+        && left.ElementFieldMask == right.ElementFieldMask
+        && StringComparer.Ordinal.Equals(left.ElementStruct?.Path, right.ElementStruct?.Path)
+        && left.ElementStruct?.Size == right.ElementStruct?.Size
+        && (left.ElementArray, right.ElementArray) switch
+        {
+            (null, null) => true,
+            ({ } leftNested, { } rightNested) => ArrayDescriptorsMatch(leftNested, rightNested),
+            _ => false
+        };
+
+    private static bool MapDescriptorsMatch(UnrealMapDescriptor left, UnrealMapDescriptor right) =>
+        StringComparer.Ordinal.Equals(left.KeyUnrealType, right.KeyUnrealType)
+        && left.KeySize == right.KeySize
+        && left.KeyByteOffset == right.KeyByteOffset
+        && left.KeyByteMask == right.KeyByteMask
+        && left.KeyFieldMask == right.KeyFieldMask
+        && StringComparer.Ordinal.Equals(left.KeyStruct?.Path, right.KeyStruct?.Path)
+        && left.KeyStruct?.Size == right.KeyStruct?.Size
+        && StringComparer.Ordinal.Equals(left.ValueUnrealType, right.ValueUnrealType)
+        && left.ValueSize == right.ValueSize
+        && left.ValueByteOffset == right.ValueByteOffset
+        && left.ValueByteMask == right.ValueByteMask
+        && left.ValueFieldMask == right.ValueFieldMask
+        && StringComparer.Ordinal.Equals(left.ValueStruct?.Path, right.ValueStruct?.Path)
+        && left.ValueStruct?.Size == right.ValueStruct?.Size
+        && (left.ValueArray, right.ValueArray) switch
+        {
+            (null, null) => true,
+            ({ } leftNested, { } rightNested) => ArrayDescriptorsMatch(leftNested, rightNested),
+            _ => false
+        };
+
     private static UnrealArrayDescriptor RequireArrayDescriptor(UnrealArrayDescriptor? descriptor)
     {
         if (descriptor is null)
@@ -1438,8 +1599,17 @@ internal sealed unsafe class NativeUnrealReflection(
             {
                 throw new InvalidOperationException($"Unreal struct descriptor '{descriptor.Path}:{field.Name}' is invalid.");
             }
-            var kind = GetFieldKind(field.UnrealType, field.Size);
-            if (kind == StructFieldKind.Boolean
+            var kind = GetPropertyKind(field.UnrealType, field.Size);
+            if (kind is NativePropertyKind.Array
+                or NativePropertyKind.Map
+                or NativePropertyKind.Set
+                or NativePropertyKind.Optional)
+            {
+                throw new NotSupportedException(
+                    $"Unreal struct field '{descriptor.Path}:{field.Name}' is a container; " +
+                    "struct fields support scalars, enums, strings, object references, and nested structs only.");
+            }
+            if (kind == NativePropertyKind.Boolean
                 && (field.ByteOffset < 0
                     || field.ByteOffset >= field.Size
                     || field.ByteMask is < 0 or > byte.MaxValue
@@ -1447,7 +1617,7 @@ internal sealed unsafe class NativeUnrealReflection(
             {
                 throw new InvalidOperationException($"Bool field '{descriptor.Path}:{field.Name}' has an invalid bit layout.");
             }
-            if (kind == StructFieldKind.Struct)
+            if (kind == NativePropertyKind.Struct)
             {
                 ValidateStructDescriptor(field.Struct
                     ?? throw new InvalidOperationException($"Nested Unreal struct field '{descriptor.Path}:{field.Name}' has no descriptor."));
@@ -1459,124 +1629,77 @@ internal sealed unsafe class NativeUnrealReflection(
         }
     }
 
-    private static byte[] SerializeStruct(UnrealStructDescriptor descriptor, UnrealStructValue value)
+    private static NativeUnrealValue WriteNativeStruct(
+        uint encodedKind,
+        UnrealValue value,
+        UnrealStructDescriptor descriptor,
+        NativeAllocations allocations)
     {
-        ValidateStructDescriptor(descriptor);
-        if (!StringComparer.Ordinal.Equals(descriptor.Path, value.Descriptor.Path))
+        if (value.Value is not UnrealStructValue structValue)
         {
-            throw new InvalidCastException($"Unreal struct '{value.Descriptor.Path}' cannot be written as '{descriptor.Path}'.");
+            throw new InvalidCastException(
+                $"Unreal struct '{descriptor.Path}' requires an UnrealStructValue, not " +
+                $"'{value.Value?.GetType().FullName ?? "null"}'.");
         }
-        var bytes = new byte[descriptor.Size];
-        foreach (var field in descriptor.Fields)
+        if (!StringComparer.Ordinal.Equals(descriptor.Path, structValue.Descriptor.Path))
         {
-            if (!value.Fields.TryGetValue(field.Name, out var fieldValue))
+            throw new InvalidCastException(
+                $"Unreal struct '{structValue.Descriptor.Path}' cannot be written as '{descriptor.Path}'.");
+        }
+        var fields = descriptor.Fields;
+        var values = allocations.AddValues(fields.Count);
+        for (var index = 0; index < fields.Count; index++)
+        {
+            var field = fields[index];
+            if (!structValue.Fields.TryGetValue(field.Name, out var fieldValue))
             {
                 throw new InvalidOperationException($"Unreal struct '{descriptor.Path}' is missing field '{field.Name}'.");
             }
-            WriteStructField(bytes, field, fieldValue);
+            var fieldKind = GetPropertyKind(field.UnrealType, field.Size);
+            values[index] = ToNativeValue(
+                fieldKind,
+                EncodePropertyKind(fieldKind),
+                fieldValue,
+                field.Struct,
+                null,
+                null,
+                null,
+                null,
+                allocations);
         }
-        return bytes;
-    }
-
-    private static void WriteStructField(Span<byte> destination, UnrealStructFieldDescriptor field, UnrealValue value)
-    {
-        var kind = GetFieldKind(field.UnrealType, field.Size);
-        var target = destination.Slice(field.Offset, field.Size);
-        var managed = value.Value is Enum enumValue ? Convert.ChangeType(enumValue, Enum.GetUnderlyingType(enumValue.GetType())) : value.Value;
-        switch (kind)
+        return new NativeUnrealValue
         {
-            case StructFieldKind.Boolean:
-            {
-                if (managed is not bool boolean)
-                {
-                    throw InvalidStructFieldCast(field, value);
-                }
-                var byteOffset = field.ByteOffset;
-                var mask = field.ByteMask == 0 ? 1 : field.ByteMask;
-                if (byteOffset < 0 || byteOffset >= field.Size || mask is < 1 or > 255)
-                {
-                    throw new InvalidOperationException($"Bool field '{field.Name}' has an invalid bit layout.");
-                }
-                target[byteOffset] = boolean
-                    ? (byte)(target[byteOffset] | mask)
-                    : (byte)(target[byteOffset] & ~mask);
-                break;
-            }
-            case StructFieldKind.Int8: target[0] = unchecked((byte)Convert.ToSByte(managed)); break;
-            case StructFieldKind.UInt8: target[0] = Convert.ToByte(managed); break;
-            case StructFieldKind.Int16: BinaryPrimitives.WriteInt16LittleEndian(target, Convert.ToInt16(managed)); break;
-            case StructFieldKind.UInt16: BinaryPrimitives.WriteUInt16LittleEndian(target, Convert.ToUInt16(managed)); break;
-            case StructFieldKind.Int32: BinaryPrimitives.WriteInt32LittleEndian(target, Convert.ToInt32(managed)); break;
-            case StructFieldKind.UInt32: BinaryPrimitives.WriteUInt32LittleEndian(target, Convert.ToUInt32(managed)); break;
-            case StructFieldKind.Int64: BinaryPrimitives.WriteInt64LittleEndian(target, Convert.ToInt64(managed)); break;
-            case StructFieldKind.UInt64: BinaryPrimitives.WriteUInt64LittleEndian(target, Convert.ToUInt64(managed)); break;
-            case StructFieldKind.Float:
-                BinaryPrimitives.WriteInt32LittleEndian(target, BitConverter.SingleToInt32Bits(Convert.ToSingle(managed)));
-                break;
-            case StructFieldKind.Double:
-                BinaryPrimitives.WriteInt64LittleEndian(target, BitConverter.DoubleToInt64Bits(Convert.ToDouble(managed)));
-                break;
-            case StructFieldKind.Struct:
-            {
-                var nestedDescriptor = field.Struct!;
-                if (value.Value is not UnrealStructValue nestedValue)
-                {
-                    throw InvalidStructFieldCast(field, value);
-                }
-                SerializeStruct(nestedDescriptor, nestedValue).CopyTo(target);
-                break;
-            }
-            default: throw new System.Diagnostics.UnreachableException();
-        }
+            Kind = encodedKind,
+            Reserved = checked((uint)fields.Count),
+            Data = unchecked((ulong)values)
+        };
     }
 
     private static UnrealStructValue ReadNativeStruct(NativeUnrealValue value, UnrealStructDescriptor descriptor)
     {
-        if (value.Data == 0 || value.Reserved != descriptor.Size)
+        var fields = descriptor.Fields;
+        if (value.Reserved != fields.Count || (value.Data == 0 && value.Reserved != 0))
         {
             throw new InvalidOperationException(
-                $"The native bridge returned {value.Reserved} bytes for Unreal struct '{descriptor.Path}', expected {descriptor.Size}.");
+                $"The native bridge returned {value.Reserved} fields for Unreal struct '{descriptor.Path}', expected {fields.Count}.");
         }
-        var bytes = new byte[descriptor.Size];
-        Marshal.Copy(unchecked((nint)value.Data), bytes, 0, bytes.Length);
-        return DeserializeStruct(descriptor, bytes);
-    }
-
-    private static UnrealStructValue DeserializeStruct(UnrealStructDescriptor descriptor, ReadOnlySpan<byte> source)
-    {
-        ValidateStructDescriptor(descriptor);
-        if (source.Length != descriptor.Size)
+        var fieldValues = new Dictionary<string, UnrealValue>(StringComparer.Ordinal);
+        var values = (NativeUnrealValue*)value.Data;
+        for (var index = 0; index < fields.Count; index++)
         {
-            throw new InvalidOperationException($"Unreal struct '{descriptor.Path}' buffer size does not match its descriptor.");
-        }
-        var fields = new Dictionary<string, UnrealValue>(StringComparer.Ordinal);
-        foreach (var field in descriptor.Fields)
-        {
-            var fieldBytes = source.Slice(field.Offset, field.Size);
-            object fieldValue = GetFieldKind(field.UnrealType, field.Size) switch
+            var field = fields[index];
+            var fieldKind = GetPropertyKind(field.UnrealType, field.Size);
+            if (values[index].Kind != EncodePropertyKind(fieldKind))
             {
-                StructFieldKind.Boolean => (fieldBytes[field.ByteOffset] & (field.ByteMask == 0 ? 1 : field.ByteMask)) != 0,
-                StructFieldKind.Int8 => unchecked((sbyte)fieldBytes[0]),
-                StructFieldKind.UInt8 => fieldBytes[0],
-                StructFieldKind.Int16 => BinaryPrimitives.ReadInt16LittleEndian(fieldBytes),
-                StructFieldKind.UInt16 => BinaryPrimitives.ReadUInt16LittleEndian(fieldBytes),
-                StructFieldKind.Int32 => BinaryPrimitives.ReadInt32LittleEndian(fieldBytes),
-                StructFieldKind.UInt32 => BinaryPrimitives.ReadUInt32LittleEndian(fieldBytes),
-                StructFieldKind.Int64 => BinaryPrimitives.ReadInt64LittleEndian(fieldBytes),
-                StructFieldKind.UInt64 => BinaryPrimitives.ReadUInt64LittleEndian(fieldBytes),
-                StructFieldKind.Float => BitConverter.Int32BitsToSingle(BinaryPrimitives.ReadInt32LittleEndian(fieldBytes)),
-                StructFieldKind.Double => BitConverter.Int64BitsToDouble(BinaryPrimitives.ReadInt64LittleEndian(fieldBytes)),
-                StructFieldKind.Struct => DeserializeStruct(field.Struct!, fieldBytes),
-                _ => throw new System.Diagnostics.UnreachableException()
-            };
-            fields.Add(field.Name, UnrealValue.From(fieldValue));
+                throw new InvalidOperationException(
+                    $"The native bridge returned a mismatched field '{field.Name}' for struct '{descriptor.Path}'.");
+            }
+            fieldValues.Add(
+                field.Name,
+                ToManagedValue(fieldKind, values[index], field.Struct));
         }
-        return new UnrealStructValue(descriptor, fields);
+        return new UnrealStructValue(descriptor, fieldValues);
     }
-
-
-    private static InvalidCastException InvalidStructFieldCast(UnrealStructFieldDescriptor field, UnrealValue value) =>
-        new($"Unreal struct field '{field.Name}' cannot be written from '{value.Value?.GetType().FullName ?? "null"}'.");
 
     private static void FreeNativeOutputAllocations(
         IReadOnlyList<UnrealParameterDescriptor> descriptors,
@@ -1603,7 +1726,7 @@ internal sealed unsafe class NativeUnrealReflection(
         {
             return;
         }
-        if (kind is NativePropertyKind.Array or NativePropertyKind.Set)
+        if (kind is NativePropertyKind.Array or NativePropertyKind.Set or NativePropertyKind.Struct)
         {
             if (value.Reserved <= MaximumArrayLength)
             {
@@ -1653,7 +1776,6 @@ internal sealed unsafe class NativeUnrealReflection(
         if (kind is not (NativePropertyKind.String
             or NativePropertyKind.Name
             or NativePropertyKind.Text
-            or NativePropertyKind.Struct
             or NativePropertyKind.LazyObject))
         {
             return;

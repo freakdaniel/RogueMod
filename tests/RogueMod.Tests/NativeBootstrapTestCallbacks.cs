@@ -20,6 +20,8 @@ internal static unsafe class NativeBootstrapTestCallbacks
     internal static bool LazyPropertyWritten;
     internal static bool LazyNullPropertyWritten;
     internal static bool SoftPropertyWritten;
+    internal static bool MapPropertyWritten;
+    internal static bool SetPropertyWritten;
     internal static bool ObjectCreated;
     internal static bool ActorSpawned;
     internal static delegate* unmanaged[Cdecl]<ulong, ulong, int, uint, NativeUnrealParameter*, int> RegisteredHookCallback;
@@ -93,7 +95,7 @@ internal static unsafe class NativeBootstrapTestCallbacks
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     internal static uint UnrealGetCapabilities() =>
         (1U << 0) | (1U << 1) | (1U << 2) | (1U << 3) | (1U << 4) | (1U << 5) | (1U << 6) | (1U << 7) | (1U << 8) | (1U << 9)
-        | (1U << 10) | (1U << 11) | (1U << 12) | (1U << 13) | (1U << 14);
+        | (1U << 10) | (1U << 11) | (1U << 12) | (1U << 13) | (1U << 14) | (1U << 15);
 
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     internal static ulong UnrealCreateObject(ulong classHandle, ulong outerHandle, char* objectName)
@@ -373,6 +375,22 @@ internal static unsafe class NativeBootstrapTestCallbacks
                 && storage.SequenceEqual(CreateSoftObjectStorage());
             return SoftPropertyWritten ? 0 : -1;
         }
+        if (handle == 0x0000_0007_0000_002A
+            && new string(propertyName) == "ScoresByName"
+            && propertyKind == MapIntStringKind
+            && value != null)
+        {
+            MapPropertyWritten = ReadMapValue(*value).SequenceEqual([(7, "Rogue"), (8, "Vera")]);
+            return MapPropertyWritten ? 0 : -1;
+        }
+        if (handle == 0x0000_0007_0000_002A
+            && new string(propertyName) == "UniqueScores"
+            && propertyKind == SetIntKind
+            && value != null)
+        {
+            SetPropertyWritten = ReadSetValue(*value).SequenceEqual([7, 8, 9]);
+            return SetPropertyWritten ? 0 : -1;
+        }
         PropertyWritten = handle == 0x0000_0007_0000_002A
             && new string(propertyName) == "bShouldPerformFullTickWhenPaused"
             && propertyKind == 1
@@ -412,26 +430,16 @@ internal static unsafe class NativeBootstrapTestCallbacks
         {
             if (parameterCount != 2 || parameters == null
                 || parameters[0].Kind != 15 || parameters[0].Flags != 1 || parameters[0].Offset != 0 || parameters[0].Size != 24
-                || parameters[0].Value.Reserved != 24 || parameters[0].Value.Data == 0
                 || parameters[1].Kind != 15 || parameters[1].Flags != 6 || parameters[1].Offset != 24 || parameters[1].Size != 24)
             {
                 return -5;
             }
-            var input = new byte[24];
-            Marshal.Copy(unchecked((nint)parameters[0].Value.Data), input, 0, input.Length);
-            if (BitConverter.ToDouble(input, 0) != 1.0
-                || BitConverter.ToDouble(input, 8) != 2.0
-                || BitConverter.ToDouble(input, 16) != 3.0)
+            var input = ReadVectorValue(parameters[0].Value);
+            if (input != (1.0, 2.0, 3.0))
             {
                 return -5;
             }
-            var output = new byte[24];
-            BitConverter.GetBytes(4.0).CopyTo(output, 0);
-            BitConverter.GetBytes(5.0).CopyTo(output, 8);
-            BitConverter.GetBytes(6.0).CopyTo(output, 16);
-            var pointer = Marshal.AllocCoTaskMem(output.Length);
-            Marshal.Copy(output, 0, pointer, output.Length);
-            parameters[1].Value = new NativeUnrealValue { Kind = 15, Reserved = 24, Data = unchecked((ulong)pointer) };
+            parameters[1].Value = AllocateVectorValue(4.0, 5.0, 6.0);
             return 0;
         }
         if (name == "TestTextMarshalling")
@@ -555,29 +563,34 @@ internal static unsafe class NativeBootstrapTestCallbacks
 
     private static NativeUnrealValue AllocateVectorValue(double x, double y, double z)
     {
-        var bytes = new byte[24];
-        BitConverter.GetBytes(x).CopyTo(bytes, 0);
-        BitConverter.GetBytes(y).CopyTo(bytes, 8);
-        BitConverter.GetBytes(z).CopyTo(bytes, 16);
-        var pointer = Marshal.AllocCoTaskMem(bytes.Length);
-        Marshal.Copy(bytes, 0, pointer, bytes.Length);
+        var pointer = Marshal.AllocCoTaskMem(3 * sizeof(NativeUnrealValue));
+        var fields = (NativeUnrealValue*)pointer;
+        fields[0] = new NativeUnrealValue { Kind = 11, Data = unchecked((ulong)BitConverter.DoubleToInt64Bits(x)) };
+        fields[1] = new NativeUnrealValue { Kind = 11, Data = unchecked((ulong)BitConverter.DoubleToInt64Bits(y)) };
+        fields[2] = new NativeUnrealValue { Kind = 11, Data = unchecked((ulong)BitConverter.DoubleToInt64Bits(z)) };
         return new NativeUnrealValue
         {
             Kind = 15,
-            Reserved = (uint)bytes.Length,
+            Reserved = 3,
             Data = unchecked((ulong)pointer)
         };
     }
 
     private static (double X, double Y, double Z) ReadVectorValue(NativeUnrealValue value)
     {
-        if (value.Kind != 15 || value.Reserved != 24 || value.Data == 0)
+        if (value.Kind != 15 || value.Reserved != 3 || value.Data == 0)
         {
             return default;
         }
-        var bytes = new byte[24];
-        Marshal.Copy(unchecked((nint)value.Data), bytes, 0, bytes.Length);
-        return (BitConverter.ToDouble(bytes, 0), BitConverter.ToDouble(bytes, 8), BitConverter.ToDouble(bytes, 16));
+        var fields = (NativeUnrealValue*)value.Data;
+        if (fields[0].Kind != 11 || fields[1].Kind != 11 || fields[2].Kind != 11)
+        {
+            return default;
+        }
+        return (
+            BitConverter.Int64BitsToDouble(unchecked((long)fields[0].Data)),
+            BitConverter.Int64BitsToDouble(unchecked((long)fields[1].Data)),
+            BitConverter.Int64BitsToDouble(unchecked((long)fields[2].Data)));
     }
 
     private static NativeUnrealValue AllocateIntArrayValue(IReadOnlyList<int> values)
@@ -770,6 +783,46 @@ internal static unsafe class NativeBootstrapTestCallbacks
         for (var index = 0; index < result.Length; index++)
         {
             result[index] = ReadIntArrayValue(elements[index]);
+        }
+        return result;
+    }
+
+    private static IReadOnlyList<(int Key, string Value)> ReadMapValue(NativeUnrealValue value)
+    {
+        if (value.Kind != MapIntStringKind || (value.Reserved != 0 && value.Data == 0))
+        {
+            return [];
+        }
+        var result = new (int, string)[checked((int)value.Reserved)];
+        var values = (NativeUnrealValue*)value.Data;
+        for (var index = 0; index < result.Length; index++)
+        {
+            if (values[index * 2].Kind != 6 || values[index * 2 + 1].Kind != 13)
+            {
+                return [];
+            }
+            result[index] = (
+                unchecked((int)values[index * 2].Data),
+                ReadStringValue(values[index * 2 + 1]));
+        }
+        return result;
+    }
+
+    private static IReadOnlyList<int> ReadSetValue(NativeUnrealValue value)
+    {
+        if (value.Kind != SetIntKind || (value.Reserved != 0 && value.Data == 0))
+        {
+            return [];
+        }
+        var result = new int[checked((int)value.Reserved)];
+        var elements = (NativeUnrealValue*)value.Data;
+        for (var index = 0; index < result.Length; index++)
+        {
+            if (elements[index].Kind != 6)
+            {
+                return [];
+            }
+            result[index] = unchecked((int)elements[index].Data);
         }
         return result;
     }

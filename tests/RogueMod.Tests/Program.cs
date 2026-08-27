@@ -648,6 +648,8 @@ public sealed class RogueModTests
         NativeBootstrapTestCallbacks.LazyPropertyWritten = false;
         NativeBootstrapTestCallbacks.LazyNullPropertyWritten = false;
         NativeBootstrapTestCallbacks.SoftPropertyWritten = false;
+        NativeBootstrapTestCallbacks.MapPropertyWritten = false;
+        NativeBootstrapTestCallbacks.SetPropertyWritten = false;
         NativeBootstrapTestCallbacks.ObjectCreated = false;
         NativeBootstrapTestCallbacks.ActorSpawned = false;
 
@@ -718,7 +720,9 @@ public sealed class RogueModTests
             Assert(NativeBootstrapTestCallbacks.Messages.Contains("[C#:sample.mod] property:ScoreGroups=7,8|9"), "Generated-style nested TArray property was not read.");
             Assert(NativeBootstrapTestCallbacks.NestedArrayPropertyWritten, "Generated-style nested TArray property was not written.");
             Assert(NativeBootstrapTestCallbacks.Messages.Contains("[C#:sample.mod] property:ScoresByName=7:Rogue:8:Vera"), "Generated-style TMap property was not read.");
+            Assert(NativeBootstrapTestCallbacks.MapPropertyWritten, "Generated-style TMap property was not written.");
             Assert(NativeBootstrapTestCallbacks.Messages.Contains("[C#:sample.mod] property:UniqueScores=7,8,9"), "Generated-style TSet property was not read.");
+            Assert(NativeBootstrapTestCallbacks.SetPropertyWritten, "Generated-style TSet property was not written.");
             Assert(NativeBootstrapTestCallbacks.Messages.Contains("[C#:sample.mod] property:OptionalScore=set:11"), "Generated-style TOptional property was not read.");
             Assert(NativeBootstrapTestCallbacks.OptionalPropertyWritten, "Generated-style TOptional property was not written.");
             Assert(NativeBootstrapTestCallbacks.Messages.Contains("[C#:sample.mod] property:OptionalUnsetScore=unset"), "Generated-style unset TOptional property was not read.");
@@ -814,6 +818,19 @@ public sealed class RogueModTests
                 { "name": "Z", "type": "DoubleProperty", "offset": 16, "array_dim": 1, "size": 8, "flags": "CPF_IsPlainOldData | CPF_NoDestructor" }
               ]
             },
+            "/Script/Valhalla.PlayerLoadoutEntry": {
+              "type": "ScriptStruct",
+              "super_struct": null,
+              "properties_size": 48,
+              "min_alignment": 8,
+              "struct_flags": "STRUCT_HasDestructor",
+              "children": [],
+              "properties": [
+                { "name": "DisplayName", "type": "StrProperty", "offset": 0, "array_dim": 1, "size": 16, "flags": "CPF_BlueprintVisible" },
+                { "name": "Level", "type": "IntProperty", "offset": 16, "array_dim": 1, "size": 4, "flags": "CPF_BlueprintVisible" },
+                { "name": "Origin", "type": "StructProperty", "struct": "/Script/CoreUObject.Vector", "offset": 24, "array_dim": 1, "size": 24, "flags": "CPF_IsPlainOldData | CPF_NoDestructor" }
+              ]
+            },
             "/Script/Engine.Actor": {
               "type": "Class",
               "super_struct": null,
@@ -838,7 +855,8 @@ public sealed class RogueModTests
                 { "name": "LazyTarget", "type": "LazyObjectProperty", "property_class": "/Script/Engine.Actor", "offset": 392, "array_dim": 1, "size": 24, "flags": "CPF_Edit | CPF_BlueprintVisible | CPF_UObjectWrapper" },
                 { "name": "SoftTarget", "type": "SoftObjectProperty", "property_class": "/Script/Engine.Actor", "offset": 416, "array_dim": 1, "size": 40, "flags": "CPF_Edit | CPF_BlueprintVisible | CPF_UObjectWrapper" },
                 { "name": "ScoresByName", "type": "MapProperty", "offset": 440, "array_dim": 1, "size": 80, "key_prop": { "name": "Key", "type": "IntProperty", "offset": 0, "array_dim": 1, "size": 4, "flags": "CPF_IsPlainOldData | CPF_NoDestructor" }, "value_prop": { "name": "Value", "type": "StrProperty", "offset": 0, "array_dim": 1, "size": 16, "flags": "CPF_IsPlainOldData | CPF_NoDestructor" }, "flags": "CPF_BlueprintVisible" },
-                { "name": "UniqueScores", "type": "SetProperty", "offset": 456, "array_dim": 1, "size": 80, "key_prop": { "name": "Element", "type": "IntProperty", "offset": 0, "array_dim": 1, "size": 4, "flags": "CPF_IsPlainOldData | CPF_NoDestructor" }, "flags": "CPF_BlueprintVisible" }
+                { "name": "UniqueScores", "type": "SetProperty", "offset": 456, "array_dim": 1, "size": 80, "key_prop": { "name": "Element", "type": "IntProperty", "offset": 0, "array_dim": 1, "size": 4, "flags": "CPF_IsPlainOldData | CPF_NoDestructor" }, "flags": "CPF_BlueprintVisible" },
+                { "name": "Loadout", "type": "StructProperty", "struct": "/Script/Valhalla.PlayerLoadoutEntry", "offset": 536, "array_dim": 1, "size": 48, "flags": "CPF_BlueprintVisible" }
               ]
             },
             "/Game/Test.BP_Player_C:SetHealth": {
@@ -967,10 +985,17 @@ public sealed class RogueModTests
         Assert(source.Contains("public UnrealSoftObjectReference<Actor> SoftTarget", StringComparison.Ordinal), "Generated path-preserving soft UObject property is missing.");
         Assert(source.Contains("public IReadOnlyDictionary<int, string> ScoresByName", StringComparison.Ordinal), "Generated TMap property is missing.");
         Assert(source.Contains("public IReadOnlySet<int> UniqueScores", StringComparison.Ordinal), "Generated TSet property is missing.");
+        Assert(source.Contains("public PlayerLoadoutEntry Loadout", StringComparison.Ordinal), "Generated non-POD struct property is missing.");
+        Assert(source.Contains("public readonly record struct PlayerLoadoutEntry", StringComparison.Ordinal), "Generated non-POD struct is missing.");
+        Assert(source.Contains("public string DisplayName { get; init; }", StringComparison.Ordinal), "Generated non-POD struct FString field is missing.");
+        Assert(source.Contains("public int Level { get; init; }", StringComparison.Ordinal), "Generated non-POD struct scalar field is missing.");
+        Assert(source.Contains("public Vector Origin { get; init; }", StringComparison.Ordinal), "Generated non-POD struct nested-struct field is missing.");
         Assert(source.Contains("Map = new(\"IntProperty\", 4, \"StrProperty\", 16", StringComparison.Ordinal), "Generated TMap descriptor is missing.");
         Assert(source.Contains("Set = new(\"IntProperty\", 4", StringComparison.Ordinal), "Generated TSet descriptor is missing.");
         Assert(source.Contains("UnrealMapValue.ToDictionary<int, string>", StringComparison.Ordinal), "Generated TMap property did not emit dictionary transport.");
         Assert(source.Contains("UnrealSetValue.ToSet<int>", StringComparison.Ordinal), "Generated TSet property did not emit set transport.");
+        Assert(source.Contains("UnrealMapValue.From", StringComparison.Ordinal), "Generated TMap property did not emit dictionary write transport.");
+        Assert(source.Contains("UnrealSetValue.From", StringComparison.Ordinal), "Generated TSet property did not emit set write transport.");
         Assert(source.Contains("public void SetHealth(float newHealth)", StringComparison.Ordinal), "Generated void UFunction wrapper is missing.");
         Assert(source.Contains("public float GetHealth()", StringComparison.Ordinal), "Generated return value wrapper is missing.");
         Assert(source.Contains("public void SetPlayerName(string newName)", StringComparison.Ordinal), "Generated FString UFunction wrapper is missing.");

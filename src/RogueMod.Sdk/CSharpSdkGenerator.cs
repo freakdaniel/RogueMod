@@ -370,13 +370,14 @@ public sealed class CSharpSdkGenerator
             builder.Append("        get => Read<").Append(type.Name).Append(">(").Append(descriptorName).AppendLine(");");
         }
 
-        if (CanWrite(property.Flags) && !type.MapAdapter && !type.SetAdapter)
+        if (CanWrite(property.Flags))
         {
             if (type.StructAdapter)
             {
                 builder.Append("        set => WriteValue(").Append(descriptorName).AppendLine(", value.ToUnrealValue());");
             }
-            else if (type.ArrayAdapter || type.OptionalAdapter || type.LazyObjectAdapter || type.SoftObjectAdapter)
+            else if (type.ArrayAdapter || type.OptionalAdapter || type.LazyObjectAdapter || type.SoftObjectAdapter
+                || type.SetAdapter || type.MapAdapter)
             {
                 builder.Append("        set => WriteValue(").Append(descriptorName).Append(", ")
                     .Append(type.LazyObjectAdapter || type.SoftObjectAdapter

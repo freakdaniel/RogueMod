@@ -291,14 +291,12 @@ internal static string? ValueDescriptorExpressionOrNull(CsType type, string desc
                 if (supported.Contains(type.Path)
                     || type.SuperPath is not null
                     || type.Size <= 0
-                    || type.Alignment <= 0
-                    || !HasFlag(type.Flags, "STRUCT_IsPlainOldData")
-                    || !HasFlag(type.Flags, "STRUCT_NoDestructor"))
+                    || type.Alignment <= 0)
                 {
                     continue;
                 }
                 var fields = type.Properties.Where(property => !HasFlag(property.Flags, "CPF_Parm")).ToArray();
-                if (fields.All(field => IsSupportedPodField(field, structs, supported, type.Size)))
+                if (fields.All(field => IsSupportedStructField(field, structs, supported, type.Size)))
                 {
                     supported.Add(type.Path);
                     changed = true;
@@ -484,7 +482,7 @@ internal static string? ValueDescriptorExpressionOrNull(CsType type, string desc
         }
     }
 
-    private static bool IsSupportedPodField(
+    private static bool IsSupportedStructField(
         UnrealSdkProperty field,
         IReadOnlyDictionary<string, UnrealSdkType> structs,
         IReadOnlySet<string> supported,
@@ -501,6 +499,8 @@ internal static string? ValueDescriptorExpressionOrNull(CsType type, string desc
             "IntProperty" or "UInt32Property" or "FloatProperty" => field.Size == 4,
             "Int64Property" or "UInt64Property" or "DoubleProperty" => field.Size == 8,
             "EnumProperty" => field.Size is 1 or 2 or 4 or 8,
+            "StrProperty" or "TextProperty" => field.Size == 16,
+            "NameProperty" => field.Size == 8,
             "StructProperty" when field.Type.TypePath is not null
                 && supported.Contains(field.Type.TypePath)
                 && structs.TryGetValue(field.Type.TypePath, out var nested) => field.Size == nested.Size,

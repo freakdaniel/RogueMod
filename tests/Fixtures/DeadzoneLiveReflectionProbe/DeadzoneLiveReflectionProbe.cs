@@ -18,10 +18,12 @@ public sealed class DeadzoneLiveReflectionProbe : IRogueMod, IRogueModGameEvents
         SoftObject = 1 << 7,
         Interface = 1 << 8,
         MapSet = 1 << 9,
-        All = Optional | WeakReference | LazyReference | NameArray | ObjectPtr | ObjectCreation | ActorSpawn | SoftObject | Interface | MapSet
+        MapSetWrite = 1 << 10,
+        NonPodStruct = 1 << 11,
+        All = Optional | WeakReference | LazyReference | NameArray | ObjectPtr | ObjectCreation | ActorSpawn | SoftObject | Interface | MapSet | MapSetWrite | NonPodStruct
     }
 
-    private const LiveFeature EnabledFeatures = LiveFeature.MapSet;
+    private const LiveFeature EnabledFeatures = LiveFeature.MapSet | LiveFeature.MapSetWrite | LiveFeature.NonPodStruct;
     private const int MaximumUpdateAttempts = 18_000;
     private const int GameplayObservationInterval = 60;
     private const string NameArrayMarker = "RogueModLiveProbe";
@@ -160,6 +162,31 @@ public sealed class DeadzoneLiveReflectionProbe : IRogueMod, IRogueModGameEvents
         1,
         "CPF_Edit | CPF_ZeroConstructor | CPF_IsPlainOldData | CPF_NoDestructor | CPF_UObjectWrapper | CPF_HasGetValueTypeHash | CPF_NativeAccessSpecifierPublic",
         16);
+
+    private static readonly UnrealStructDescriptor GameplayTagStruct = new(
+        "/Script/GameplayTags.GameplayTag",
+        8,
+        4,
+        [new("TagName", "NameProperty", 0, 8)]);
+
+    private static readonly UnrealStructDescriptor WakeupSequenceDataStruct = new(
+        "/Script/Valhalla.ValWakeupSequenceData",
+        12,
+        4,
+        [
+            new("bPlayWakeupSequence", "BoolProperty", 0, 1, 1, 0, 1, 255),
+            new("WakeupSequenceTag", "StructProperty:/Script/GameplayTags.GameplayTag", 4, 8, Struct: GameplayTagStruct)
+        ]);
+
+    private static readonly UnrealPropertyDescriptor WakeupSequenceDataProperty = new(
+        "/Script/Valhalla.ValPlayerController",
+        "r_WakeupSequenceData",
+        "StructProperty:/Script/Valhalla.ValWakeupSequenceData",
+        3352,
+        1,
+        "CPF_BlueprintVisible | CPF_BlueprintReadOnly | CPF_Net | CPF_RepNotify | CPF_NoDestructor | CPF_Protected | CPF_NativeAccessSpecifierProtected",
+        12,
+        Struct: WakeupSequenceDataStruct);
 
     private static readonly MapProbeCandidate[] GameplayMapCandidates =
     [
@@ -336,6 +363,10 @@ public sealed class DeadzoneLiveReflectionProbe : IRogueMod, IRogueModGameEvents
     private bool interfaceCompleted;
     private bool mapSetCompleted;
     private bool mapSetFailureLogged;
+    private bool mapSetWriteCompleted;
+    private bool mapSetWriteFailureLogged;
+    private bool nonPodStructCompleted;
+    private bool nonPodStructFailureLogged;
     private bool shipReady;
     private bool shipReadyLogged;
     private string? gameplayPhaseSignature;
@@ -365,7 +396,9 @@ public sealed class DeadzoneLiveReflectionProbe : IRogueMod, IRogueModGameEvents
                 && IsComplete(LiveFeature.ActorSpawn, actorSpawnCompleted)
                 && IsComplete(LiveFeature.SoftObject, softObjectCompleted)
                 && IsComplete(LiveFeature.Interface, interfaceCompleted)
-                && IsComplete(LiveFeature.MapSet, mapSetCompleted)))
+                && IsComplete(LiveFeature.MapSet, mapSetCompleted)
+                && IsComplete(LiveFeature.MapSetWrite, mapSetWriteCompleted)
+                && IsComplete(LiveFeature.NonPodStruct, nonPodStructCompleted)))
         {
             return;
         }
@@ -425,6 +458,14 @@ public sealed class DeadzoneLiveReflectionProbe : IRogueMod, IRogueModGameEvents
             {
                 context.Logger.Log(ModLogLevel.Error, "LIVE-MAP-SET FAIL: no TMap/TSet property read was verified");
             }
+            if (IsEnabled(LiveFeature.MapSetWrite) && !mapSetWriteCompleted)
+            {
+                context.Logger.Log(ModLogLevel.Error, "LIVE-MAP-SET-WRITE FAIL: no TMap/TSet write round-trip was verified");
+            }
+            if (IsEnabled(LiveFeature.NonPodStruct) && !nonPodStructCompleted)
+            {
+                context.Logger.Log(ModLogLevel.Error, "LIVE-NONPOD-STRUCT FAIL: no non-POD struct write round-trip was verified");
+            }
         }
     }
 
@@ -437,7 +478,7 @@ public sealed class DeadzoneLiveReflectionProbe : IRogueMod, IRogueModGameEvents
         // Object enumeration is inherently unstable while Unreal is creating and destroying
         // startup objects. Run at most one probe per callback so retries cannot cascade through
         // several FindAllOf calls and mutations in the same frame.
-        switch (updateAttempts % 10)
+        switch (updateAttempts % 11)
         {
             case 0: TryVerifyOptional(); break;
             case 1: TryVerifyWeakReference(); break;
@@ -449,6 +490,7 @@ public sealed class DeadzoneLiveReflectionProbe : IRogueMod, IRogueModGameEvents
             case 7: TryVerifySoftObject(); break;
             case 8: TryVerifyInterface(); break;
             case 9: TryVerifyMapSet(); break;
+            case 10: TryVerifyNonPodStruct(); break;
         }
     }
 
@@ -641,6 +683,11 @@ public sealed class DeadzoneLiveReflectionProbe : IRogueMod, IRogueModGameEvents
             var (mapCandidate, mapOwner, mapValue) = mapMatch.Value;
             var (setCandidate, setOwner, setValue) = setMatch.Value;
 
+            if (IsEnabled(LiveFeature.MapSetWrite) && !mapSetWriteCompleted)
+            {
+                TryVerifyMapSetWriteRoundTrip(mapCandidate, mapOwner, mapValue, setCandidate, setOwner, setValue);
+            }
+
             mapSetCompleted = true;
             context.Logger.Log(
                 ModLogLevel.Information,
@@ -657,6 +704,118 @@ public sealed class DeadzoneLiveReflectionProbe : IRogueMod, IRogueModGameEvents
             }
         }
     }
+
+    private void TryVerifyMapSetWriteRoundTrip(
+        MapProbeCandidate mapCandidate,
+        ObservedObject mapOwner,
+        UnrealMapValue mapValue,
+        SetProbeCandidate setCandidate,
+        ObservedObject setOwner,
+        UnrealSetValue setValue)
+    {
+        if (context is null
+            || (context.Unreal.Capabilities & UnrealReflectionCapabilities.MapSetWrites) == 0)
+        {
+            return;
+        }
+
+        try
+        {
+            var unreal = context.Unreal;
+            // Writing the value twice forces the second write to construct and destroy a
+            // bridge-built FScriptMap/FScriptSet, exercising the full build/swap/destroy path
+            // that the read-only path never touches. The logical contents are unchanged.
+            unreal.WriteProperty(mapOwner.Handle, mapCandidate.Property, UnrealValue.From(mapValue));
+            unreal.WriteProperty(mapOwner.Handle, mapCandidate.Property, UnrealValue.From(mapValue));
+            var mapAfterWrite = unreal.ReadProperty(mapOwner.Handle, mapCandidate.Property).As<UnrealMapValue>();
+            if (mapAfterWrite.Entries.Count != mapValue.Entries.Count)
+            {
+                throw new InvalidOperationException(
+                    $"map write changed the entry count: expected {mapValue.Entries.Count} actual {mapAfterWrite.Entries.Count}");
+            }
+
+            unreal.WriteProperty(setOwner.Handle, setCandidate.Property, UnrealValue.From(setValue));
+            unreal.WriteProperty(setOwner.Handle, setCandidate.Property, UnrealValue.From(setValue));
+            var setAfterWrite = unreal.ReadProperty(setOwner.Handle, setCandidate.Property).As<UnrealSetValue>();
+            if (setAfterWrite.Elements.Count != setValue.Elements.Count)
+            {
+                throw new InvalidOperationException(
+                    $"set write changed the element count: expected {setValue.Elements.Count} actual {setAfterWrite.Elements.Count}");
+            }
+
+            mapSetWriteCompleted = true;
+            context.Logger.Log(
+                ModLogLevel.Information,
+                $"LIVE-MAP-SET-WRITE PASS: map={mapCandidate.Name} on {mapOwner.Path}; " +
+                $"set={setCandidate.Name} on {setOwner.Path} build=ok swap=ok destroy=ok");
+        }
+        catch (Exception exception)
+        {
+            if (!mapSetWriteFailureLogged)
+            {
+                context.Logger.Log(ModLogLevel.Debug, $"LIVE-MAP-SET-WRITE rejected: {exception.Message}");
+                mapSetWriteFailureLogged = true;
+            }
+        }
+    }
+
+    private void TryVerifyNonPodStruct()
+    {
+        if ((EnabledFeatures & LiveFeature.NonPodStruct) == 0
+            || nonPodStructCompleted
+            || context is null
+            || !context.Unreal.IsAvailable
+            || !shipReady)
+        {
+            return;
+        }
+
+        var controller = context.Unreal.FindFirstOf("PlayerController");
+        if (controller.IsNull || !context.Unreal.IsValid(controller))
+        {
+            return;
+        }
+
+        try
+        {
+            var unreal = context.Unreal;
+            var original = unreal.ReadProperty(controller, WakeupSequenceDataProperty).As<UnrealStructValue>();
+            var originalBool = original.GetField("bPlayWakeupSequence").As<bool>();
+            var originalTag = ReadGameplayTag(original);
+
+            // Write the value back twice: the second write constructs and destroys a
+            // bridge-built struct, exercising the field-wise build/swap/destroy path that the
+            // raw-byte POD transport never used.
+            unreal.WriteProperty(controller, WakeupSequenceDataProperty, UnrealValue.From(original));
+            unreal.WriteProperty(controller, WakeupSequenceDataProperty, UnrealValue.From(original));
+
+            var after = unreal.ReadProperty(controller, WakeupSequenceDataProperty).As<UnrealStructValue>();
+            if (after.GetField("bPlayWakeupSequence").As<bool>() != originalBool
+                || !StringComparer.Ordinal.Equals(ReadGameplayTag(after), originalTag))
+            {
+                throw new InvalidOperationException(
+                    $"non-POD struct did not survive a write/read round-trip: original=({originalBool}, {originalTag}) " +
+                    $"actual=({after.GetField("bPlayWakeupSequence").As<bool>()}, {ReadGameplayTag(after)})");
+            }
+
+            nonPodStructCompleted = true;
+            context.Logger.Log(
+                ModLogLevel.Information,
+                $"LIVE-NONPOD-STRUCT PASS: {unreal.GetPathName(controller)} property=r_WakeupSequenceData " +
+                $"bPlayWakeupSequence={originalBool} tag={originalTag} build=ok swap=ok destroy=ok");
+        }
+        catch (Exception exception)
+        {
+            if (!nonPodStructFailureLogged)
+            {
+                context.Logger.Log(ModLogLevel.Debug, $"LIVE-NONPOD-STRUCT rejected: {exception.Message}");
+                nonPodStructFailureLogged = true;
+            }
+        }
+    }
+
+    private static string ReadGameplayTag(UnrealStructValue value) =>
+        value.GetField("WakeupSequenceTag").As<UnrealStructValue>().GetField("TagName").As<string>();
 
     private static MapProbeMatch? FindFirstNonEmptyGameplayMap(
         IUnrealReflection unreal,

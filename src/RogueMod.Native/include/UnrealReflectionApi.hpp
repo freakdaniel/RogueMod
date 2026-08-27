@@ -3,6 +3,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <shared_mutex>
 #include <string>
 #include <vector>
@@ -16,10 +17,10 @@ namespace RogueMod
 {
     /// <summary>
     /// Authoritative UE 5.6.1 sparse-container layouts from the vanilla engine source
-    /// (Core/Public/Containers/{SparseArray,Set,Map,BitArray}.h). The Valhalla fork adds a
-    /// trailing eight bytes (FScriptMap/FScriptSet element size 80 instead of vanilla 72) but
-    /// keeps the iteration-relevant members at the vanilla offsets; the bridge validates the
-    /// 80-byte footprint and the runtime layout before reading any element.
+    /// (Core/Public/Containers/{SparseArray,Set,Map,BitArray}.h). FScriptMap/FScriptSet are an
+    /// 80-byte footprint (a 56-byte sparse array, a 16-byte inline hash allocator, and the
+    /// 32-bit bucket count); the bridge validates the 80-byte footprint and the runtime layout
+    /// before reading any element.
     /// </summary>
     namespace ScriptContainers
     {
@@ -90,6 +91,32 @@ namespace RogueMod
 
         static_assert(offsetof(ScriptSparseArray, first_free_index) == 48);
         static_assert(sizeof(ScriptSparseArray) == 56);
+
+        /// <summary>
+        /// FScriptSet/FScriptMap layout for this build (80-byte footprint), derived from the
+        /// pinned UE 5.6.1 container source (Containers/{Set,Map}.h). The sparse element
+        /// array occupies the first 56 bytes; the hash table follows as TInlineAllocator&lt;1&gt;
+        /// holding a single inline FSetElementId bucket at +56 and a heap bucket-array pointer
+        /// at +64, with the bucket count at +72. GetAllocation() returns the heap pointer when
+        /// non-null, so a write always allocates a heap bucket array (count &gt;= 1) and leaves
+        /// the inline bucket INDEX_NONE.
+        /// </summary>
+        constexpr std::size_t script_set_inline_bucket_offset = 56;
+        constexpr std::size_t script_set_hash_offset = 64;
+        constexpr std::size_t script_set_hash_size_offset = 72;
+
+        struct ScriptSetContainer
+        {
+            ScriptSparseArray elements;
+            std::int32_t inline_bucket;
+            std::int32_t* hash;
+            std::int32_t hash_size;
+        };
+
+        static_assert(offsetof(ScriptSetContainer, elements) == 0);
+        static_assert(offsetof(ScriptSetContainer, inline_bucket) == script_set_inline_bucket_offset);
+        static_assert(offsetof(ScriptSetContainer, hash) == script_set_hash_offset);
+        static_assert(offsetof(ScriptSetContainer, hash_size) == script_set_hash_size_offset);
     }
 
     class UnrealReflectionApi
@@ -219,6 +246,10 @@ namespace RogueMod
             const void* uclass,
             const void* location,
             const void* rotation);
+        using get_value_type_hash_fn = std::uint32_t(__cdecl*)(const void* property, const void* address);
+        using struct_get_struct_fn = void*(__cdecl*)(void* self);
+        using field_get_class_fn = void**(__cdecl*)(void* self);
+        using field_class_get_fname_fn = void*(__cdecl*)(void* self);
 
         [[nodiscard]] std::uint64_t make_handle(const void* object) const;
         [[nodiscard]] const void* resolve_handle(std::uint64_t handle) const;
@@ -249,6 +280,45 @@ namespace RogueMod
             const void*& element) const;
         [[nodiscard]] bool validate_script_set_layout(
             const ScriptContainers::SetLayout& layout) const;
+        /// <summary>
+        /// Resolves FProperty::GetValueTypeHashInternal for the given live property through
+        /// the game vtable and returns the hash of the value at <paramref name="address"/>.
+        /// Returns false when the vtable slot cannot be resolved or validated.
+        /// </summary>
+        [[nodiscard]] bool get_value_type_hash(
+            void* property,
+            const void* address,
+            std::uint32_t& hash) const;
+        [[nodiscard]] std::int32_t assign_set_value(
+            void* property,
+            void* address,
+            std::uint32_t encoded_kind,
+            const UnrealValue& value) const;
+        [[nodiscard]] std::int32_t assign_map_value(
+            void* property,
+            void* address,
+            std::uint32_t encoded_kind,
+            const UnrealValue& value) const;
+        [[nodiscard]] bool resolve_property_kind(
+            void* property,
+            std::uint32_t& encoded_kind) const;
+        [[nodiscard]] bool marshal_struct_fields(
+            void* property,
+            const void* address,
+            std::uint32_t encoded_kind,
+            UnrealValue& value) const;
+        [[nodiscard]] std::int32_t assign_struct_fields(
+            void* property,
+            void* address,
+            std::uint32_t encoded_kind,
+            const UnrealValue& value) const;
+        [[nodiscard]] std::int32_t assign_script_container(
+            void* property,
+            void* address,
+            std::uint32_t count,
+            void* hash_property,
+            const ScriptContainers::SetLayout& set_layout,
+            const std::function<bool(std::size_t index, void* block)>& construct_element) const;
         /// Writes one marshalled value through its live property. Returns 0 on success or a
         /// negative native status: -4 generic rejection, -7 object setter rejected the
         /// write, -8 the previous value changed and could not be restored.
@@ -355,6 +425,9 @@ namespace RogueMod
         static_construct_object_fn m_static_construct_object{};
         object_get_world_fn m_object_get_world{};
         world_spawn_actor_fn m_world_spawn_actor{};
+        struct_get_struct_fn m_struct_get_struct{};
+        field_get_class_fn m_field_get_class{};
+        field_class_get_fname_fn m_field_class_get_fname{};
         void(__cdecl* m_log)(std::int32_t level, const wchar_t* message){};
         UnrealMutationBackend m_mutation_backend;
     };

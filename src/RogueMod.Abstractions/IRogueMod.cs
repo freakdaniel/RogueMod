@@ -129,7 +129,8 @@ public enum UnrealReflectionCapabilities
     ActorSpawning = 1 << 11,
     SoftObjectReferences = 1 << 12,
     InterfaceReferences = 1 << 13,
-    MapSetProperties = 1 << 14
+    MapSetProperties = 1 << 14,
+    MapSetWrites = 1 << 15
 }
 
 public enum UnrealHookPhase

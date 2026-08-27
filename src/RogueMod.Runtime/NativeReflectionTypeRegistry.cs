@@ -13,8 +13,8 @@ internal static class NativeReflectionTypeRegistry
 
     /// <summary>
     /// FScriptMap/FScriptSet footprint confirmed by the live JMap dump for Deadzone: Rogue
-    /// 1.4.2.0 (all 1163 TMap and 194 TSet properties report element size 80). The Valhalla
-    /// fork deviates from vanilla UE 5.6.1 (72 bytes), so a mismatch disables the family.
+    /// 1.4.2.0 (all 1163 TMap and 194 TSet properties report element size 80), matching the
+    /// vanilla UE 5.6.1 container layout; a mismatch disables the family.
     /// </summary>
     internal const int DeadzoneScriptMapSize = 80;
 
