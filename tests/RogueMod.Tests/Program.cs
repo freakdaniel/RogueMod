@@ -184,6 +184,30 @@ public sealed class RogueModTests
                 "Managed post-hook did not encode its return replacement into the native callback buffer.");
         }
 
+        var unsupportedInputFunction = new UnrealFunctionDescriptor(
+            "/Script/Test.HookOwner",
+            "/Script/Test.HookOwner:ObserveUnsupportedInput",
+            "ObserveUnsupportedInput",
+            "FUNC_Public",
+            [
+                new("ComplexInput", "StructProperty:/Script/Test.Unsupported", 0, 1, "CPF_Parm", 64),
+                new("ReturnValue", "IntProperty", 64, 1, "CPF_Parm | CPF_OutParm | CPF_ReturnParm", 4)
+            ]);
+        observed = null;
+        using (reflection.RegisterHook(
+                   unsupportedInputFunction,
+                   UnrealHookPhase.Post,
+                   new UnrealHookOptions(SkipInputDecoding: true),
+                   context => observed = context))
+        {
+            Assert(NativeHookTestCallbacks.Dispatch(0x0000_0007_0000_002A, 0, 17) == 0,
+                "Managed post-hook decoded an explicitly skipped unsupported input.");
+            Assert(observed is { Phase: UnrealHookPhase.Post }
+                && observed.Arguments.Count == 0
+                && observed.Result.ReturnValue.As<int>() == 17,
+                "Managed post-hook did not preserve return data while skipping pure inputs.");
+        }
+
     }
 
     static unsafe void NativeHookComplexMutationOwnership()
@@ -442,6 +466,105 @@ public sealed class RogueModTests
                 && Marshal.PtrToStringUni(unchecked((nint)replacementFields[0].Data), 8) == "Vanguard"
                 && replacementFields[1].Data == 9,
                 "Managed non-POD struct pre-hook did not transfer recursive replacement ownership.");
+            NativeHookTestCallbacks.ReleaseTransportedValues();
+        }
+
+        var tagDescriptor = new UnrealStructDescriptor(
+            "/Script/Test.Tag",
+            8,
+            8,
+            [new("Name", "NameProperty", 0, 8)]);
+        var tagArrayDescriptor = new UnrealArrayDescriptor(
+            "StructProperty:/Script/Test.Tag",
+            8,
+            ElementStruct: tagDescriptor);
+        var envelopeDescriptor = new UnrealStructDescriptor(
+            "/Script/Test.DamageEnvelope",
+            24,
+            8,
+            [
+                new("Source", "WeakObjectProperty:/Script/Engine.Actor", 0, 8),
+                new("Tags", "ArrayProperty", 8, 16, Array: tagArrayDescriptor)
+            ]);
+        var envelopeFunction = new UnrealFunctionDescriptor(
+            "/Script/Test.HookOwner",
+            "/Script/Test.HookOwner:ObserveEnvelope",
+            "ObserveEnvelope",
+            "FUNC_Public",
+            [new("Input", "StructProperty:/Script/Test.DamageEnvelope", 0, 1, "CPF_Parm", 24, Struct: envelopeDescriptor)]);
+        using (reflection.RegisterHook(envelopeFunction, UnrealHookPhase.Pre, hook =>
+               {
+                   var observed = hook.Arguments["Input"].As<UnrealStructValue>();
+                   var tags = observed.GetField("Tags").As<UnrealArrayValue>();
+                   Assert(observed.GetField("Source").As<UnrealObjectHandle>().Value == 0x0000_0007_0000_0011
+                       && tags.Elements.Count == 1
+                       && tags.Elements[0].As<UnrealStructValue>().GetField("Name").As<string>() == "Damage.Bullet",
+                       "Managed struct-with-container hook did not decode its recursive snapshot.");
+                   hook.SetArgument(
+                       "Input",
+                       UnrealValue.From(new UnrealStructValue(
+                           envelopeDescriptor,
+                           new Dictionary<string, UnrealValue>
+                           {
+                               ["Source"] = UnrealValue.From(new UnrealObjectHandle(0x0000_0007_0000_0011)),
+                               ["Tags"] = UnrealArrayValue.From(
+                                   tagArrayDescriptor,
+                                   ["Damage.Critical", "Damage.Weakpoint"],
+                                   name => UnrealValue.From(new UnrealStructValue(
+                                       tagDescriptor,
+                                       new Dictionary<string, UnrealValue>
+                                       {
+                                           ["Name"] = UnrealValue.From(name)
+                                       })))
+                           })));
+               }))
+        {
+            var originalName = Marshal.StringToCoTaskMemUni("Damage.Bullet");
+            var originalTagFields = Marshal.AllocCoTaskMem(sizeof(NativeUnrealReflection.NativeUnrealValue));
+            *(NativeUnrealReflection.NativeUnrealValue*)originalTagFields = new()
+            {
+                Kind = 14,
+                Reserved = 13,
+                Data = unchecked((ulong)originalName)
+            };
+            var originalTags = Marshal.AllocCoTaskMem(sizeof(NativeUnrealReflection.NativeUnrealValue));
+            *(NativeUnrealReflection.NativeUnrealValue*)originalTags = new()
+            {
+                Kind = 15,
+                Reserved = 1,
+                Data = unchecked((ulong)originalTagFields)
+            };
+            var originalEnvelope = Marshal.AllocCoTaskMem(2 * sizeof(NativeUnrealReflection.NativeUnrealValue));
+            var originalEnvelopeFields = (NativeUnrealReflection.NativeUnrealValue*)originalEnvelope;
+            originalEnvelopeFields[0] = new() { Kind = 19, Data = 0x0000_0007_0000_0011 };
+            originalEnvelopeFields[1] = new()
+            {
+                Kind = 17U | (15U << 8),
+                Reserved = 1,
+                Data = unchecked((ulong)originalTags)
+            };
+            Assert(NativeHookTestCallbacks.DispatchNative(
+                    0x0000_0007_0000_002A,
+                    new NativeUnrealReflection.NativeUnrealValue
+                    {
+                        Kind = 15,
+                        Reserved = 2,
+                        Data = unchecked((ulong)originalEnvelope)
+                    }) == 0,
+                "Managed struct-with-container pre-hook rejected the native snapshot.");
+            var replacement = NativeHookTestCallbacks.Parameters[0].Value;
+            var replacementFields = (NativeUnrealReflection.NativeUnrealValue*)replacement.Data;
+            var replacementTags = (NativeUnrealReflection.NativeUnrealValue*)replacementFields[1].Data;
+            var firstReplacementTag = (NativeUnrealReflection.NativeUnrealValue*)replacementTags[0].Data;
+            var secondReplacementTag = (NativeUnrealReflection.NativeUnrealValue*)replacementTags[1].Data;
+            Assert((NativeHookTestCallbacks.Parameters[0].Flags & 8U) != 0
+                && replacementFields[0].Kind == 19
+                && replacementFields[0].Data == 0x0000_0007_0000_0011
+                && replacementFields[1].Kind == (17U | (15U << 8))
+                && replacementFields[1].Reserved == 2
+                && Marshal.PtrToStringUni(unchecked((nint)firstReplacementTag[0].Data), 15) == "Damage.Critical"
+                && Marshal.PtrToStringUni(unchecked((nint)secondReplacementTag[0].Data), 16) == "Damage.Weakpoint",
+                "Managed struct-with-container hook did not transfer recursive replacement ownership.");
             NativeHookTestCallbacks.ReleaseTransportedValues();
         }
     }
@@ -1023,6 +1146,29 @@ public sealed class RogueModTests
                 { "name": "Origin", "type": "StructProperty", "struct": "/Script/CoreUObject.Vector", "offset": 24, "array_dim": 1, "size": 24, "flags": "CPF_IsPlainOldData | CPF_NoDestructor" }
               ]
             },
+            "/Script/GameplayTags.GameplayTag": {
+              "type": "ScriptStruct",
+              "super_struct": null,
+              "properties_size": 8,
+              "min_alignment": 8,
+              "struct_flags": "STRUCT_HasDestructor",
+              "children": [],
+              "properties": [
+                { "name": "TagName", "type": "NameProperty", "offset": 0, "array_dim": 1, "size": 8, "flags": "CPF_BlueprintVisible" }
+              ]
+            },
+            "/Script/Valhalla.DamageEnvelope": {
+              "type": "ScriptStruct",
+              "super_struct": null,
+              "properties_size": 24,
+              "min_alignment": 8,
+              "struct_flags": "STRUCT_HasDestructor",
+              "children": [],
+              "properties": [
+                { "name": "Source", "type": "WeakObjectProperty", "property_class": "/Script/Engine.Actor", "offset": 0, "array_dim": 1, "size": 8, "flags": "CPF_BlueprintVisible | CPF_UObjectWrapper" },
+                { "name": "Tags", "type": "ArrayProperty", "offset": 8, "array_dim": 1, "size": 16, "inner": { "name": "Tags", "type": "StructProperty", "struct": "/Script/GameplayTags.GameplayTag", "offset": 0, "array_dim": 1, "size": 8, "flags": "CPF_BlueprintVisible" }, "flags": "CPF_BlueprintVisible | CPF_ZeroConstructor" }
+              ]
+            },
             "/Script/Engine.Actor": {
               "type": "Class",
               "super_struct": null,
@@ -1049,7 +1195,8 @@ public sealed class RogueModTests
                 { "name": "ScoresByName", "type": "MapProperty", "offset": 440, "array_dim": 1, "size": 80, "key_prop": { "name": "Key", "type": "IntProperty", "offset": 0, "array_dim": 1, "size": 4, "flags": "CPF_IsPlainOldData | CPF_NoDestructor" }, "value_prop": { "name": "Value", "type": "StrProperty", "offset": 0, "array_dim": 1, "size": 16, "flags": "CPF_IsPlainOldData | CPF_NoDestructor" }, "flags": "CPF_BlueprintVisible" },
                 { "name": "UniqueScores", "type": "SetProperty", "offset": 456, "array_dim": 1, "size": 80, "key_prop": { "name": "Element", "type": "IntProperty", "offset": 0, "array_dim": 1, "size": 4, "flags": "CPF_IsPlainOldData | CPF_NoDestructor" }, "flags": "CPF_BlueprintVisible" },
                 { "name": "Loadout", "type": "StructProperty", "struct": "/Script/Valhalla.PlayerLoadoutEntry", "offset": 536, "array_dim": 1, "size": 48, "flags": "CPF_BlueprintVisible" },
-                { "name": "PlayerLoadoutEntry", "type": "StructProperty", "struct": "/Script/Valhalla.PlayerLoadoutEntry", "offset": 584, "array_dim": 1, "size": 48, "flags": "CPF_BlueprintVisible" }
+                { "name": "PlayerLoadoutEntry", "type": "StructProperty", "struct": "/Script/Valhalla.PlayerLoadoutEntry", "offset": 584, "array_dim": 1, "size": 48, "flags": "CPF_BlueprintVisible" },
+                { "name": "LastDamage", "type": "StructProperty", "struct": "/Script/Valhalla.DamageEnvelope", "offset": 632, "array_dim": 1, "size": 24, "flags": "CPF_BlueprintVisible" }
               ]
             },
             "/Game/Test.BP_Player_C:SetHealth": {
@@ -1188,6 +1335,10 @@ public sealed class RogueModTests
             "The C# type translator produced non-deterministic generated source.");
         Assert(source.Contains("public class BP_Player : Actor", StringComparison.Ordinal), "Generated class inheritance is missing.");
         Assert(source.Contains("IUnrealObjectType<BP_Player>", StringComparison.Ordinal), "Generated typed object construction contract is missing.");
+        Assert(source.Contains("public new const string DefaultObjectPath = \"/Game/Test.Default__BP_Player_C\";", StringComparison.Ordinal),
+            "Generated class default-object path is missing.");
+        Assert(source.Contains("public new static BP_Player? FindDefaultObject", StringComparison.Ordinal),
+            "Generated typed default-object lookup is missing.");
         Assert(source.Contains("public new static IReadOnlyList<BP_Player> FindAll", StringComparison.Ordinal), "Generated typed FindAll wrapper is missing.");
         Assert(source.Contains("public float Health", StringComparison.Ordinal), "Generated typed property is missing.");
         Assert(source.Contains("public Actor? Target", StringComparison.Ordinal), "Generated object wrapper property is missing.");
@@ -1204,8 +1355,13 @@ public sealed class RogueModTests
         Assert(source.Contains("public IReadOnlyDictionary<int, string> ScoresByName", StringComparison.Ordinal), "Generated TMap property is missing.");
         Assert(source.Contains("public IReadOnlySet<int> UniqueScores", StringComparison.Ordinal), "Generated TSet property is missing.");
         Assert(source.Contains("public PlayerLoadoutEntry Loadout", StringComparison.Ordinal), "Generated non-POD struct property is missing.");
+        Assert(source.Contains("public DamageEnvelope LastDamage", StringComparison.Ordinal), "Generated struct-with-container property is missing.");
+        Assert(source.Contains("public Actor? Source { get; init; }", StringComparison.Ordinal), "Generated struct UObject field is missing.");
+        Assert(source.Contains("public IReadOnlyList<GameplayTag> Tags { get; init; }", StringComparison.Ordinal), "Generated struct TArray field is missing.");
+        Assert(source.Contains("Array: new(\"StructProperty:/Script/GameplayTags.GameplayTag\", 8", StringComparison.Ordinal),
+            "Generated struct TArray descriptor is missing.");
         Assert(generatedSource.Contains(
-                "global::DeadzoneRogue.Sdk.PlayerLoadoutEntry.FromUnrealValue(ReadValue(__PlayerLoadoutEntry))",
+                "global::DeadzoneRogue.Sdk.PlayerLoadoutEntry.FromUnrealValue(ReadValue(__PlayerLoadoutEntry), Unreal)",
                 StringComparison.Ordinal),
             "Generated type references were not globally qualified against a colliding member name.");
         Assert(source.Contains("public readonly record struct PlayerLoadoutEntry", StringComparison.Ordinal), "Generated non-POD struct is missing.");
@@ -1238,6 +1394,8 @@ public sealed class RogueModTests
             "Generated strongly typed pre-hook registration is missing.");
         Assert(source.Contains("callback, UnrealHookOptions options = default", StringComparison.Ordinal),
             "Generated hook registration did not expose ordering and instance filtering options.");
+        Assert(source.Contains("options with { SkipInputDecoding = true }", StringComparison.Ordinal),
+            "Generated post hooks do not skip unused pure input decoding.");
         Assert(source.Contains("public static IDisposable RegisterGetHealthPostHook", StringComparison.Ordinal),
             "Generated strongly typed post-hook registration is missing.");
         Assert(source.Contains("public delegate void EchoNumbersPreHookHandler(BP_Player context, ref IReadOnlyList<int> input)", StringComparison.Ordinal),

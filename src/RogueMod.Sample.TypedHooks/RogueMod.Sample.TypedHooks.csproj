@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>RogueMod.Sample.TypedHooks</AssemblyName>
+    <RootNamespace>RogueMod.Sample.TypedHooks</RootNamespace>
+    <Version>0.1.0</Version>
+
+    <RogueModModId>sample.typed-hooks</RogueModModId>
+    <RogueModModName>Typed hooks sample</RogueModModName>
+    <RogueModEntryPoint>RogueMod.Sample.TypedHooks.TypedHooksMod</RogueModEntryPoint>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="RogueMod.Sdk" ExcludeAssets="runtime" />
+    <PackageReference Include="DeadzoneRogue.Sdk" ExcludeAssets="runtime" />
+  </ItemGroup>
+</Project>

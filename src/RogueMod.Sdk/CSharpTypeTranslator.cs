@@ -68,23 +68,24 @@ internal static class CSharpTypeTranslator
         CsType type,
         string valueExpression,
         string? descriptorExpression = null,
+        string unrealExpression = "Unreal",
         int containerDepth = 0) =>
         type.ObjectWrapper
             ? $"WrapObject({valueExpression}, static (unreal, handle) => new {type.NonNullableName}(unreal, handle))"
             : type.LazyObjectAdapter
-                ? $"UnrealLazyObjectReference<{type.NonNullableName}>.FromUnrealValue({valueExpression}, handle => new {type.NonNullableName}(Unreal, handle))"
+                ? $"UnrealLazyObjectReference<{type.NonNullableName}>.FromUnrealValue({valueExpression}, handle => new {type.NonNullableName}({unrealExpression}, handle))"
             : type.SoftObjectAdapter
-                ? $"UnrealSoftObjectReference<{type.NonNullableName}>.FromUnrealValue({valueExpression}, handle => new {type.NonNullableName}(Unreal, handle))"
+                ? $"UnrealSoftObjectReference<{type.NonNullableName}>.FromUnrealValue({valueExpression}, handle => new {type.NonNullableName}({unrealExpression}, handle))"
             : type.StructAdapter
-                ? $"{type.Name}.FromUnrealValue({valueExpression})"
+                ? $"{type.Name}.FromUnrealValue({valueExpression}, {unrealExpression})"
 : type.ArrayAdapter
-                ? $"UnrealArrayValue.ToList<{type.Element!.Name}>({valueExpression}, element{containerDepth} => {ReadValueExpression(type.Element, $"element{containerDepth}", null, containerDepth + 1)})"
+                ? $"UnrealArrayValue.ToList<{type.Element!.Name}>({valueExpression}, element{containerDepth} => {ReadValueExpression(type.Element, $"element{containerDepth}", null, unrealExpression, containerDepth + 1)})"
                 : type.OptionalAdapter
-                    ? $"UnrealOptional<{type.Element!.Name}>.FromUnrealValue({valueExpression}, optional{containerDepth} => {ReadValueExpression(type.Element, $"optional{containerDepth}", null, containerDepth + 1)})"
+                    ? $"UnrealOptional<{type.Element!.Name}>.FromUnrealValue({valueExpression}, optional{containerDepth} => {ReadValueExpression(type.Element, $"optional{containerDepth}", null, unrealExpression, containerDepth + 1)})"
                     : type.SetAdapter
-                        ? $"UnrealSetValue.ToSet<{type.Element!.Name}>({valueExpression}, element{containerDepth} => {ReadValueExpression(type.Element, $"element{containerDepth}", null, containerDepth + 1)})"
+                        ? $"UnrealSetValue.ToSet<{type.Element!.Name}>({valueExpression}, element{containerDepth} => {ReadValueExpression(type.Element, $"element{containerDepth}", null, unrealExpression, containerDepth + 1)})"
                         : type.MapAdapter
-                            ? $"UnrealMapValue.ToDictionary<{type.Key!.Name}, {type.Value!.Name}>({valueExpression}, key{containerDepth} => {ReadValueExpression(type.Key, $"key{containerDepth}", null, containerDepth + 1)}, value{containerDepth} => {ReadValueExpression(type.Value, $"value{containerDepth}", null, containerDepth + 1)})"
+                            ? $"UnrealMapValue.ToDictionary<{type.Key!.Name}, {type.Value!.Name}>({valueExpression}, key{containerDepth} => {ReadValueExpression(type.Key, $"key{containerDepth}", null, unrealExpression, containerDepth + 1)}, value{containerDepth} => {ReadValueExpression(type.Value, $"value{containerDepth}", null, unrealExpression, containerDepth + 1)})"
                             : $"{valueExpression}.As<{type.Name}>()";
 
     internal static string ReadHookValueExpression(
@@ -99,7 +100,7 @@ internal static class CSharpTypeTranslator
             : type.SoftObjectAdapter
                 ? $"UnrealSoftObjectReference<{type.NonNullableName}>.FromUnrealValue({valueExpression}, handle => new {type.NonNullableName}({unrealExpression}, handle))"
             : type.StructAdapter
-                ? $"{type.Name}.FromUnrealValue({valueExpression})"
+                ? $"{type.Name}.FromUnrealValue({valueExpression}, {unrealExpression})"
 : type.ArrayAdapter
                 ? $"UnrealArrayValue.ToList<{type.Element!.Name}>({valueExpression}, hookElement{containerDepth} => {ReadHookValueExpression(type.Element, $"hookElement{containerDepth}", unrealExpression, containerDepth + 1)})"
                 : type.OptionalAdapter
@@ -239,7 +240,10 @@ internal static string? ValueDescriptorExpressionOrNull(CsType type, string desc
         "IntProperty" or "UInt32Property" or "FloatProperty" => type.Size == 4,
         "Int64Property" or "UInt64Property" or "DoubleProperty" => type.Size == 8,
         "EnumProperty" => type.Size is 1 or 2 or 4 or 8,
-        "ObjectProperty" or "ClassProperty" => type.Size == 8,
+            "ObjectProperty" or "ClassProperty" or "WeakObjectProperty" => type.Size == 8,
+            "InterfaceProperty" => type.Size == 16,
+            "LazyObjectProperty" => type.Size == 32,
+            "SoftObjectProperty" or "SoftClassProperty" => type.Size == 40,
         "StrProperty" or "TextProperty" => type.Size == 16,
         "NameProperty" => type.Size == 8,
         "StructProperty" when type.TypePath is not null => supportedStructPaths.Contains(type.TypePath),
@@ -288,14 +292,19 @@ internal static string? ValueDescriptorExpressionOrNull(CsType type, string desc
             changed = false;
             foreach (var type in structs.Values)
             {
+                var fields = type.Properties.Where(property => !HasFlag(property.Flags, "CPF_Parm")).ToArray();
                 if (supported.Contains(type.Path)
-                    || type.SuperPath is not null
+                    // UE exposes several atomic native wrappers (for example
+                    // FVector_NetQuantize) as derived structs with no reflected fields.
+                    // Their native wire representation is therefore an empty field list;
+                    // structs that add reflected fields still require explicit inherited
+                    // layout support and remain untyped.
+                    || (type.SuperPath is not null && fields.Length != 0)
                     || type.Size <= 0
                     || type.Alignment <= 0)
                 {
                     continue;
                 }
-                var fields = type.Properties.Where(property => !HasFlag(property.Flags, "CPF_Parm")).ToArray();
                 if (fields.All(field => IsSupportedStructField(field, structs, supported, type.Size)))
                 {
                     supported.Add(type.Path);
@@ -501,9 +510,21 @@ internal static string? ValueDescriptorExpressionOrNull(CsType type, string desc
             "EnumProperty" => field.Size is 1 or 2 or 4 or 8,
             "StrProperty" or "TextProperty" => field.Size == 16,
             "NameProperty" => field.Size == 8,
+            "ObjectProperty" or "ClassProperty" or "WeakObjectProperty" => field.Size == 8,
+            "InterfaceProperty" => field.Size == 16,
+            "LazyObjectProperty" => field.Size == 32,
+            "SoftObjectProperty" or "SoftClassProperty" => field.Size == 40,
             "StructProperty" when field.Type.TypePath is not null
                 && supported.Contains(field.Type.TypePath)
                 && structs.TryGetValue(field.Type.TypePath, out var nested) => field.Size == nested.Size,
+            "ArrayProperty" when field.Size == 16 && field.Type.Inner is not null =>
+                IsSupportedArrayElement(field.Type.Inner, supported),
+            "OptionalProperty" when field.Type.Inner is not null =>
+                IsSupportedOptionalValue(field.Type.Inner, supported),
+            "SetProperty" when field.Type.Inner is not null =>
+                IsSupportedArrayElement(field.Type.Inner, supported),
+            "MapProperty" when field.Type.Key is not null && field.Type.Value is not null =>
+                IsSupportedMapKey(field.Type.Key) && IsSupportedArrayElement(field.Type.Value, supported),
             _ => false
         };
     }

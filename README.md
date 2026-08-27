@@ -24,6 +24,8 @@ src/
   RogueMod.Sdk/                JMAP generator and managed/native authoring SDK
   RogueMod.Templates/          Installable dotnet new templates
   RogueMod.Sample.Managed/     C# sample package
+  RogueMod.Sample.TypedHooks/  External-style generated SDK and hook sample
+  RogueMod.Sample.Invulnerability/ Practical exact-instance gameplay hook
   RogueMod.Sample.Native/      C++ sample package
   RogueMod.Tooling.SdkDumper/  UE4SS Lua dump helper
 tests/                         Automated tests and fixtures
@@ -77,6 +79,14 @@ dotnet build src/RogueMod.Sample.Managed/RogueMod.Sample.Managed.csproj \
 ```
 
 The package is written to `.artifacts/packages/managed/Release/sample.hello-managed`.
+
+After generating the local Deadzone SDK, build the end-to-end typed hook sample through the same NuGet packages used by external mod authors:
+
+```bash
+scripts/build-game-sdk-samples.sh
+```
+
+On Windows, run `./scripts/build-game-sdk-samples.ps1`. The resulting `sample.typed-hooks` and `sample.player-invulnerability` packages contain only their mod assemblies and manifests; the generated game SDK remains a single shared runtime assembly. See the [typed transport sample](src/RogueMod.Sample.TypedHooks/README.md) and [practical gameplay sample](src/RogueMod.Sample.Invulnerability/README.md).
 
 External managed mods can consume the authoring packages instead of importing repository files:
 

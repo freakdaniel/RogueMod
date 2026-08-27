@@ -337,6 +337,7 @@ internal sealed unsafe class NativeUnrealReflection(
             this,
             function,
             phase,
+            options.SkipInputDecoding,
             callback);
         if (!HookRegistrations.TryAdd(context, registration))
         {
@@ -443,6 +444,14 @@ internal sealed unsafe class NativeUnrealReflection(
             {
                 var descriptor = registration.Function.ParameterList[index];
                 if (phase == UnrealHookPhase.Pre && !descriptor.IsInput)
+                {
+                    continue;
+                }
+                if (phase == UnrealHookPhase.Post
+                    && registration.SkipInputDecoding
+                    && descriptor.IsInput
+                    && !descriptor.IsOutput
+                    && !descriptor.IsReturn)
                 {
                     continue;
                 }
@@ -1604,15 +1613,6 @@ internal sealed unsafe class NativeUnrealReflection(
                 throw new InvalidOperationException($"Unreal struct descriptor '{descriptor.Path}:{field.Name}' is invalid.");
             }
             var kind = GetPropertyKind(field.UnrealType, field.Size);
-            if (kind is NativePropertyKind.Array
-                or NativePropertyKind.Map
-                or NativePropertyKind.Set
-                or NativePropertyKind.Optional)
-            {
-                throw new NotSupportedException(
-                    $"Unreal struct field '{descriptor.Path}:{field.Name}' is a container; " +
-                    "struct fields support scalars, enums, strings, object references, and nested structs only.");
-            }
             if (kind == NativePropertyKind.Boolean
                 && (field.ByteOffset < 0
                     || field.ByteOffset >= field.Size
@@ -1629,6 +1629,22 @@ internal sealed unsafe class NativeUnrealReflection(
                 {
                     throw new InvalidOperationException($"Nested Unreal struct field '{descriptor.Path}:{field.Name}' has a size mismatch.");
                 }
+            }
+            else if (kind == NativePropertyKind.Array)
+            {
+                RequireArrayDescriptor(field.Array);
+            }
+            else if (kind == NativePropertyKind.Optional)
+            {
+                RequireOptionalDescriptor(field.Optional);
+            }
+            else if (kind == NativePropertyKind.Map)
+            {
+                RequireMapDescriptor(field.Map);
+            }
+            else if (kind == NativePropertyKind.Set)
+            {
+                RequireSetDescriptor(field.Set);
             }
         }
     }
@@ -1662,13 +1678,13 @@ internal sealed unsafe class NativeUnrealReflection(
             var fieldKind = GetPropertyKind(field.UnrealType, field.Size);
             values[index] = ToNativeValue(
                 fieldKind,
-                EncodePropertyKind(fieldKind),
+                EncodePropertyKind(fieldKind, field.Array, field.Optional, field.Map, field.Set),
                 fieldValue,
                 field.Struct,
-                null,
-                null,
-                null,
-                null,
+                field.Array,
+                field.Optional,
+                field.Map,
+                field.Set,
                 allocations);
         }
         return new NativeUnrealValue
@@ -1693,14 +1709,22 @@ internal sealed unsafe class NativeUnrealReflection(
         {
             var field = fields[index];
             var fieldKind = GetPropertyKind(field.UnrealType, field.Size);
-            if (values[index].Kind != EncodePropertyKind(fieldKind))
+            var encodedFieldKind = EncodePropertyKind(fieldKind, field.Array, field.Optional, field.Map, field.Set);
+            if (values[index].Kind != encodedFieldKind)
             {
                 throw new InvalidOperationException(
                     $"The native bridge returned a mismatched field '{field.Name}' for struct '{descriptor.Path}'.");
             }
             fieldValues.Add(
                 field.Name,
-                ToManagedValue(fieldKind, values[index], field.Struct));
+                ToManagedValue(
+                    fieldKind,
+                    values[index],
+                    field.Struct,
+                    field.Array,
+                    field.Optional,
+                    field.Map,
+                    field.Set));
         }
         return new UnrealStructValue(descriptor, fieldValues);
     }
@@ -1834,11 +1858,13 @@ internal sealed unsafe class NativeUnrealReflection(
         NativeUnrealReflection owner,
         UnrealFunctionDescriptor function,
         UnrealHookPhase phase,
+        bool skipInputDecoding,
         Action<UnrealHookContext> callback)
     {
         internal NativeUnrealReflection Owner { get; } = owner;
         internal UnrealFunctionDescriptor Function { get; } = function;
         internal UnrealHookPhase Phase { get; } = phase;
+        internal bool SkipInputDecoding { get; } = skipInputDecoding;
         internal Action<UnrealHookContext> Callback { get; } = callback;
         internal int Disabled;
     }

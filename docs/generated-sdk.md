@@ -25,6 +25,10 @@ Add the authoring targets and typed game SDK to the mod project:
 
 No local game installation, UE4SS developer build, dump hotkey, or JMAP file is required. `PackageRogueMod` excludes `DeadzoneRogue.Sdk.dll` from the mod output. The matching assembly is installed once in `<GameRoot>/RogueMod/runtime/shared` and resolved into every collectible mod context by the runtime. Exact assembly-version matching prevents a mod from silently running against an incompatible generated SDK.
 
+The repository's [`RogueMod.Sample.TypedHooks`](../src/RogueMod.Sample.TypedHooks/README.md) project is a complete external-style example. It consumes only the two public SDK packages, finds a generated object wrapper, invokes a generated method, and mutates a `TMap` out parameter through generated pre- and post-hook delegates. It contains no hand-written Unreal path, native offset, function descriptor, or transport value.
+
+[`RogueMod.Sample.Invulnerability`](../src/RogueMod.Sample.Invulnerability/README.md) continues from transport verification to a practical game hook. It follows generated wrappers from the local `ValPlayerController` to its current `ValCharacter`, observes that exact instance's real `OnDamaged` event, restores health and shields through typed methods, and rebinds after pawn replacement or level travel. Generated post hooks skip pure inputs that their callback cannot consume, so the unsupported `DamageData` structure does not force mod authors back to raw descriptors.
+
 ## Maintainer capture
 
 The pinned asset and game compatibility are recorded in `config/GameSdk/deadzone-rogue.json`. `prepare-game-sdk.ps1` verifies the installed executable version, downloads the exact official UE4SS archive, validates its SHA-256, installs the game-specific `VTableLayout.ini`, pins `[EngineVersionOverride]` to Unreal Engine 5.6 in `UE4SS-settings.ini`, disables unrelated bundled mods, and enables the maintainer dumper. The runtime installer applies the same override for normal installations, and `roguemod diagnose` reports a mismatch. The dumper schedules one automatic snapshot after GameState initialization; `Ctrl+F5` remains only as a fallback.
@@ -68,7 +72,7 @@ Inside this repository the generated project can reference `src/RogueMod.Abstrac
 Each reflected class receives:
 
 - inheritance matching Unreal reflection;
-- `FindFirst(IUnrealReflection)`, `FindAll(IUnrealReflection)`, and object-handle construction;
+- `FindFirst(IUnrealReflection)`, `FindDefaultObject(IUnrealReflection)`, `FindAll(IUnrealReflection)`, and object-handle construction;
 - typed C# properties for supported primitive, enum, struct, and object-wrapper types;
 - typed methods with named inputs and direct return values;
 - generated result records for `out/ref` parameters;
@@ -86,6 +90,8 @@ if (player is not null)
 }
 
 IReadOnlyList<BP_Player> allPlayers = context.Unreal.FindAll<BP_Player>();
+
+var systemLibrary = KismetSystemLibrary.FindDefaultObject(context.Unreal);
 ```
 
 The current runtime supports single and multi-object discovery; bool, integer, enum, float, double, strong, weak, lazy, and soft object references, `FString`, `FName`, `FText`, script structs, and capability-gated `TArray`, `TOptional`, and `TMap`/`TSet` values in properties, `UFunction` input/return/out parameters, and mutable pre/post hooks. Writable generated strong-object properties use the bridge's build-validated engine `TObjectPtr` setter, never a raw pointer store. Generated hook delegates use `ref` for every replaceable translated value and only submit a replacement when it differs from the decoded snapshot. Every generated registration helper accepts an optional `UnrealHookOptions` argument for native exact-instance filtering and deterministic priority ordering. Arrays may contain other arrays up to three `TArray` containers deep. `FindAll<T>` uses UE4SS class matching and returns generated wrappers around serial-validated handles, never raw pointers. String-like values are exposed as C# `string`; arrays are exposed recursively as `IReadOnlyList<T>`; maps use `IReadOnlyDictionary<K,V>` with scalar keys and values that may be one nested `TArray`; sets use `IReadOnlySet<T>` with elements that may be one nested `TArray`; optionals use `UnrealOptional<T>` to preserve set/unset. Weak references use the same nullable generated wrapper shape as strong references. Lazy references use `UnrealLazyObjectReference<T>` so their persistent `UnrealGuid` survives while `CachedTarget` is absent. Soft references use `UnrealSoftObjectReference<T>` so their persistent asset path remains available without loading or rooting the target. Descriptors include offsets, element sizes, bool masks, nested struct layout, recursive array inner metadata, map/set key/value metadata, and optional inner metadata from JMAP. Before invocation or hook activation, the bridge verifies the live parameter count, total buffer size, return offset, live parameter offsets and sizes, and descriptor bounds.

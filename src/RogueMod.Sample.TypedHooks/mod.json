@@ -1,0 +1,10 @@
+{
+  "id": "sample.typed-hooks",
+  "name": "Typed hooks sample",
+  "version": "0.1.0",
+  "kind": "managed",
+  "entryPoint": "dlls/RogueMod.Sample.TypedHooks.dll::RogueMod.Sample.TypedHooks.TypedHooksMod",
+  "description": "Demonstrates generated DeadzoneRogue.Sdk wrappers and mutable typed UFunction hooks without manual descriptors.",
+  "defaultLanguage": "en",
+  "supportedLanguages": ["en"]
+}

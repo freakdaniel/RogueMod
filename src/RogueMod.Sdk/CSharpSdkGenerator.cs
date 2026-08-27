@@ -286,6 +286,8 @@ public sealed class CSharpSdkGenerator
         builder.AppendLine("{");
         builder.Append("    public ").Append(hidingModifier).Append("const string UnrealPath = ").Append(Literal(type.Path)).AppendLine(";");
         builder.Append("    public ").Append(hidingModifier).Append("const string UnrealName = ").Append(Literal(type.Name)).AppendLine(";");
+        builder.Append("    public ").Append(hidingModifier).Append("const string DefaultObjectPath = ")
+            .Append(Literal(GetDefaultObjectPath(type.Path, type.Name))).AppendLine(";");
         builder.AppendLine();
         builder.Append("    public ").Append(typeName)
             .Append("(IUnrealReflection unreal, UnrealObjectHandle handle) : base(unreal, handle) { }").AppendLine();
@@ -300,6 +302,13 @@ public sealed class CSharpSdkGenerator
         builder.Append("        return unreal.FindFirst<").Append(typeName).AppendLine(">();");
         builder.AppendLine("    }");
         builder.AppendLine();
+        builder.Append("    public ").Append(hidingModifier).Append("static ").Append(typeName).AppendLine("? FindDefaultObject(IUnrealReflection unreal)");
+        builder.AppendLine("    {");
+        builder.AppendLine("        ArgumentNullException.ThrowIfNull(unreal);");
+        builder.AppendLine("        var handle = unreal.FindFirstOf(DefaultObjectPath);");
+        builder.AppendLine("        return handle.IsNull || !unreal.IsValid(handle) ? null : new(unreal, handle);");
+        builder.AppendLine("    }");
+        builder.AppendLine();
         builder.Append("    public ").Append(hidingModifier).Append("static IReadOnlyList<").Append(typeName)
             .AppendLine("> FindAll(IUnrealReflection unreal)");
         builder.AppendLine("    {");
@@ -309,7 +318,8 @@ public sealed class CSharpSdkGenerator
 
         var usedMembers = new HashSet<string>(StringComparer.Ordinal)
         {
-            typeName, "UnrealPath", "UnrealName", "FindFirst", "FindAll", "Handle", "Unreal", "IsValid", "PathName"
+            typeName, "UnrealPath", "UnrealName", "DefaultObjectPath", "FindFirst", "FindDefaultObject", "FindAll",
+            "Handle", "Unreal", "IsValid", "PathName"
         };
         foreach (var property in type.Properties.Where(property => !HasFlag(property.Flags, "CPF_Parm")))
         {
@@ -323,6 +333,14 @@ public sealed class CSharpSdkGenerator
             WriteFunction(builder, type, function, UniqueIdentifier(function.Name, usedMembers), typeNames, supportedStructPaths);
         }
         builder.AppendLine("}");
+    }
+
+    private static string GetDefaultObjectPath(string classPath, string className)
+    {
+        var separator = classPath.LastIndexOf('.');
+        return separator >= 0
+            ? classPath.Insert(separator + 1, "Default__")
+            : $"{classPath}.Default__{className}";
     }
 
     private static void WriteProperty(
@@ -360,7 +378,7 @@ public sealed class CSharpSdkGenerator
         else if (type.StructAdapter)
         {
             builder.Append("        get => ").Append(type.Name).Append(".FromUnrealValue(ReadValue(")
-                .Append(descriptorName).AppendLine("));");
+                .Append(descriptorName).AppendLine("), Unreal);");
         }
         else if (type.ArrayAdapter || type.OptionalAdapter || type.LazyObjectAdapter || type.SoftObjectAdapter
             || type.SetAdapter || type.MapAdapter)
@@ -645,7 +663,7 @@ public sealed class CSharpSdkGenerator
         builder.AppendLine("        ArgumentNullException.ThrowIfNull(unreal);");
         builder.AppendLine("        ArgumentNullException.ThrowIfNull(callback);");
         builder.Append("        return unreal.RegisterHook(").Append(descriptorName)
-            .AppendLine(", UnrealHookPhase.Post, options, hook =>");
+            .AppendLine(", UnrealHookPhase.Post, options with { SkipInputDecoding = true }, hook =>");
         builder.AppendLine("        {");
         if (postReturn is { } returned)
         {
@@ -714,7 +732,7 @@ public sealed class CSharpSdkGenerator
         string valueExpression,
         string? descriptorExpression = null,
         int containerDepth = 0) =>
-        CSharpTypeTranslator.ReadValueExpression(type, valueExpression, descriptorExpression, containerDepth);
+        CSharpTypeTranslator.ReadValueExpression(type, valueExpression, descriptorExpression, "Unreal", containerDepth);
 
     private static string WriteValueExpression(CsType type, string valueExpression, string descriptorExpression) =>
         CSharpTypeTranslator.WriteValueExpression(type, valueExpression, descriptorExpression);
@@ -770,16 +788,19 @@ public sealed class CSharpSdkGenerator
         foreach (var field in fields)
         {
             var fieldType = ResolveType(field.Type, field.ArrayDimension, typeNames, supportedStructPaths);
-            var expression = fieldType.StructAdapter
-                ? $"{fieldNames[field]}.ToUnrealValue()"
-                : $"UnrealValue.From({fieldNames[field]})";
+            var expression = CSharpTypeTranslator.WriteHookValueExpression(
+                fieldType,
+                fieldNames[field],
+                $"Descriptor.Fields[{IndexOf(fields, field)}]");
             builder.Append("            [").Append(Literal(field.Name)).Append("] = ").Append(expression).AppendLine(",");
         }
         builder.AppendLine("        }));");
 
         builder.AppendLine();
-        builder.Append("    public static ").Append(typeName).AppendLine(" FromUnrealValue(UnrealValue value)");
+        builder.Append("    public static ").Append(typeName)
+            .AppendLine(" FromUnrealValue(UnrealValue value, IUnrealReflection unreal)");
         builder.AppendLine("    {");
+        builder.AppendLine("        ArgumentNullException.ThrowIfNull(unreal);");
         builder.AppendLine("        var transported = value.As<UnrealStructValue>();");
         builder.AppendLine("        if (!StringComparer.Ordinal.Equals(transported.Descriptor.Path, Descriptor.Path))");
         builder.AppendLine("        {");
@@ -792,9 +813,7 @@ public sealed class CSharpSdkGenerator
         {
             var fieldType = ResolveType(field.Type, field.ArrayDimension, typeNames, supportedStructPaths);
             var transported = $"transported.GetField({Literal(field.Name)})";
-            var expression = fieldType.StructAdapter
-                ? $"{fieldType.Name}.FromUnrealValue({transported})"
-                : $"{transported}.As<{fieldType.Name}>()";
+            var expression = CSharpTypeTranslator.ReadHookValueExpression(fieldType, transported, "unreal");
             builder.Append("            ").Append(fieldNames[field]).Append(" = ").Append(expression).AppendLine(",");
         }
         builder.AppendLine("        };");

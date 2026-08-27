@@ -64,6 +64,12 @@ $packageOutput = Join-Path $repositoryRoot '.artifacts\sdk\packages'
 $feed = Join-Path $repositoryRoot '.artifacts\sdk\feed'
 New-Item -ItemType Directory -Path $output, $packageOutput, $feed -Force | Out-Null
 
+& dotnet build (Join-Path $repositoryRoot 'src\RogueMod.Cli\RogueMod.Cli.csproj') `
+    --configuration Release --nologo
+if ($LASTEXITCODE -ne 0) {
+    throw "RogueMod CLI build failed with exit code $LASTEXITCODE."
+}
+
 & dotnet run --project (Join-Path $repositoryRoot 'src\RogueMod.Cli') `
     --configuration Release --no-build -- `
     generate-sdk --jmap ([IO.Path]::GetFullPath($Jmap)) --output $output `
@@ -84,13 +90,22 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 $generatedProject = Join-Path $output 'DeadzoneRogue.Sdk.csproj'
-& dotnet restore $generatedProject --source $feed --nologo
-if ($LASTEXITCODE -ne 0) {
-    throw "Generated game SDK restore failed with exit code $LASTEXITCODE."
+$restorePackages = Join-Path ([IO.Path]::GetTempPath()) ("RogueMod.GeneratedSdk." + [Guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $restorePackages | Out-Null
+try {
+    & dotnet restore $generatedProject --source $feed --packages $restorePackages --nologo
+    if ($LASTEXITCODE -ne 0) {
+        throw "Generated game SDK restore failed with exit code $LASTEXITCODE."
+    }
+    & dotnet pack $generatedProject --configuration Release --no-restore --output $packageOutput --nologo
+    if ($LASTEXITCODE -ne 0) {
+        throw "Generated game SDK packing failed with exit code $LASTEXITCODE."
+    }
 }
-& dotnet pack $generatedProject --configuration Release --no-restore --output $packageOutput --nologo
-if ($LASTEXITCODE -ne 0) {
-    throw "Generated game SDK packing failed with exit code $LASTEXITCODE."
+finally {
+    if (Test-Path -LiteralPath $restorePackages) {
+        Remove-Item -LiteralPath $restorePackages -Recurse -Force
+    }
 }
 
 $generatedAssembly = Join-Path $output 'bin\Release\net10.0\DeadzoneRogue.Sdk.dll'

@@ -141,11 +141,13 @@ public enum UnrealHookPhase
 
 /// <summary>
 /// Registration policy for a UFunction hook. Higher priorities run first; equal priorities
-/// retain registration order. A null instance handle matches every object.
+/// retain registration order. A null instance handle matches every object. Post hooks may skip
+/// decoding pure input parameters when their callback only consumes return and out/ref values.
 /// </summary>
 public readonly record struct UnrealHookOptions(
     int Priority = 0,
-    UnrealObjectHandle Instance = default);
+    UnrealObjectHandle Instance = default,
+    bool SkipInputDecoding = false);
 
 public readonly record struct UnrealObjectHandle(ulong Value)
 {
@@ -249,14 +251,14 @@ public sealed record UnrealFunctionDescriptor(
 
 public readonly record struct UnrealArgument(string Name, UnrealValue Value);
 
-/// <summary>Field-wise layout metadata for a POD Unreal script struct.</summary>
+/// <summary>Field-wise layout metadata for a transportable Unreal script struct.</summary>
 public sealed record UnrealStructDescriptor(
     string Path,
     int Size,
     int Alignment,
     IReadOnlyList<UnrealStructFieldDescriptor> Fields);
 
-/// <summary>Layout and nested-type metadata for one field in a POD Unreal struct.</summary>
+/// <summary>Layout and nested-type metadata for one field in a transportable Unreal struct.</summary>
 public sealed record UnrealStructFieldDescriptor(
     string Name,
     string UnrealType,
@@ -266,9 +268,13 @@ public sealed record UnrealStructFieldDescriptor(
     int ByteOffset = 0,
     int ByteMask = 0,
     int FieldMask = 0,
-    UnrealStructDescriptor? Struct = null);
+    UnrealStructDescriptor? Struct = null,
+    UnrealArrayDescriptor? Array = null,
+    UnrealOptionalDescriptor? Optional = null,
+    UnrealMapDescriptor? Map = null,
+    UnrealSetDescriptor? Set = null);
 
-/// <summary>A field-wise POD struct value used by generated SDK adapters.</summary>
+/// <summary>A field-wise struct value used by generated SDK adapters.</summary>
 public sealed record UnrealStructValue(
     UnrealStructDescriptor Descriptor,
     IReadOnlyDictionary<string, UnrealValue> Fields)
