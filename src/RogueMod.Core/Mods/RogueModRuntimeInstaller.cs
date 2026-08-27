@@ -53,7 +53,9 @@ public sealed partial class RogueModRuntimeInstaller
         var bridgeStaging = Path.Combine(ue4ssModsRoot, $".stage-{RogueModLayout.LoaderModName}-{transaction}");
         var bridgeBackup = Path.Combine(ue4ssModsRoot, $".backup-{RogueModLayout.LoaderModName}-{transaction}");
         var modsFile = Path.Combine(ue4ssModsRoot, "mods.txt");
+        var settingsFile = Resolve(normalizedGameRoot, profile.Ue4ss.RootRelativePath, "UE4SS-settings.ini");
         var oldModsFile = File.Exists(modsFile) ? File.ReadAllBytes(modsFile) : null;
+        var oldSettingsFile = File.Exists(settingsFile) ? File.ReadAllBytes(settingsFile) : null;
         var migratedManagedMods = new List<(string LegacyPath, string Destination)>();
         try
         {
@@ -83,6 +85,10 @@ public sealed partial class RogueModRuntimeInstaller
                 Directory.Move(bridgeStaging, bridgeDeployment);
                 MigrateLegacyManagedMods(runtimeBackup, gameModsRoot, migratedManagedMods);
                 MigrateLegacyManagedMods(bridgeBackup, gameModsRoot, migratedManagedMods);
+                if (profile.Ue4ss.EngineVersionOverride is { } engineVersion)
+                {
+                    Ue4ssSettingsEditor.Apply(settingsFile, engineVersion);
+                }
                 EnableRuntime(modsFile);
             }
             catch
@@ -109,6 +115,7 @@ public sealed partial class RogueModRuntimeInstaller
                     Directory.Move(bridgeBackup, existingBridge);
                 }
                 ModPackageFileSystem.RestoreFile(modsFile, oldModsFile);
+                ModPackageFileSystem.RestoreFile(settingsFile, oldSettingsFile);
                 throw;
             }
 

@@ -41,8 +41,38 @@ public sealed class InstallationInspector
             CheckCompatibilityFile(checks, root, compatibilityFile);
         }
 
+        if (profile.Ue4ss.EngineVersionOverride is { } engineVersion)
+        {
+            CheckEngineVersionOverride(
+                checks,
+                Resolve(root, profile.Ue4ss.RootRelativePath, "UE4SS-settings.ini"),
+                engineVersion);
+        }
+
         CheckEnabledBuiltInMods(checks, Resolve(root, profile.Ue4ss.RootRelativePath, "Mods", "mods.txt"));
         return new(profile, root, checks);
+    }
+
+    private static void CheckEngineVersionOverride(
+        List<DiagnosticCheck> checks,
+        string path,
+        Ue4ssEngineVersionOverride expected)
+    {
+        if (!File.Exists(path))
+        {
+            checks.Add(new("ue4ss-engine-version", DiagnosticStatus.Fail, $"Missing: {path}"));
+            return;
+        }
+
+        checks.Add(Ue4ssSettingsEditor.Matches(path, expected)
+            ? new(
+                "ue4ss-engine-version",
+                DiagnosticStatus.Pass,
+                $"UE4SS engine override is {expected.MajorVersion}.{expected.MinorVersion}.")
+            : new(
+                "ue4ss-engine-version",
+                DiagnosticStatus.Fail,
+                $"Expected MajorVersion = {expected.MajorVersion} and MinorVersion = {expected.MinorVersion} in {path}"));
     }
 
     private static void CheckFile(List<DiagnosticCheck> checks, string id, string path, bool required)

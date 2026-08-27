@@ -27,7 +27,7 @@ No local game installation, UE4SS developer build, dump hotkey, or JMAP file is 
 
 ## Maintainer capture
 
-The pinned asset and game compatibility are recorded in `config/GameSdk/deadzone-rogue.json`. `prepare-game-sdk.ps1` verifies the installed executable version, downloads the exact official UE4SS archive, validates its SHA-256, installs the game-specific `VTableLayout.ini`, disables unrelated bundled mods, and enables the maintainer dumper. The dumper schedules one automatic snapshot after GameState initialization; `Ctrl+F5` remains only as a fallback.
+The pinned asset and game compatibility are recorded in `config/GameSdk/deadzone-rogue.json`. `prepare-game-sdk.ps1` verifies the installed executable version, downloads the exact official UE4SS archive, validates its SHA-256, installs the game-specific `VTableLayout.ini`, pins `[EngineVersionOverride]` to Unreal Engine 5.6 in `UE4SS-settings.ini`, disables unrelated bundled mods, and enables the maintainer dumper. The runtime installer applies the same override for normal installations, and `roguemod diagnose` reports a mismatch. The dumper schedules one automatic snapshot after GameState initialization; `Ctrl+F5` remains only as a fallback.
 
 ```powershell
 ./scripts/prepare-game-sdk.ps1 `

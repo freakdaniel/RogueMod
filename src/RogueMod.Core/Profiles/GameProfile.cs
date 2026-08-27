@@ -18,7 +18,12 @@ public sealed record Ue4ssProfile(
     string ProxyRelativePath,
     string LibraryRelativePath,
     string ProtonDllOverride,
-    IReadOnlyList<CompatibilityFile> CompatibilityFiles);
+    IReadOnlyList<CompatibilityFile> CompatibilityFiles)
+{
+    public Ue4ssEngineVersionOverride? EngineVersionOverride { get; init; }
+}
+
+public sealed record Ue4ssEngineVersionOverride(int MajorVersion, int MinorVersion);
 
 public sealed record CompatibilityFile(
     string SourceRelativePath,
@@ -74,6 +79,11 @@ public static class GameProfileLoader
                 throw new InvalidDataException($"Invalid SHA-256 for '{file.DestinationRelativePath}'.");
             }
         }
+
+        if (profile.Ue4ss.EngineVersionOverride is { } version
+            && (version.MajorVersion <= 0 || version.MinorVersion < 0))
+        {
+            throw new InvalidDataException("UE4SS engineVersionOverride must contain a positive majorVersion and a non-negative minorVersion.");
+        }
     }
 }
-

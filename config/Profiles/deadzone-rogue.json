@@ -10,6 +10,10 @@
     "proxyRelativePath": "Valhalla/Binaries/Win64/dwmapi.dll",
     "libraryRelativePath": "Valhalla/Binaries/Win64/ue4ss/UE4SS.dll",
     "protonDllOverride": "dwmapi=n,b",
+    "engineVersionOverride": {
+      "majorVersion": 5,
+      "minorVersion": 6
+    },
     "compatibilityFiles": [
       {
         "sourceRelativePath": "config/Compatibility/DeadzoneRogue/VTableLayout.ini",

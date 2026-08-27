@@ -37,6 +37,57 @@ if (-not $win64Directory.Equals($expectedWin64Directory, [StringComparison]::Ord
     throw "Refusing to install UE4SS outside the expected game binary directory: $win64Directory"
 }
 
+function Set-EngineVersionOverride([string] $Path, [int] $MajorVersion, [int] $MinorVersion) {
+    $lines = [Collections.Generic.List[string]]::new()
+    if (Test-Path -LiteralPath $Path -PathType Leaf) {
+        Get-Content -LiteralPath $Path | ForEach-Object { $lines.Add($_) }
+    }
+
+    $sectionStart = -1
+    for ($index = 0; $index -lt $lines.Count; $index++) {
+        if ($lines[$index].Trim().Equals('[EngineVersionOverride]', [StringComparison]::OrdinalIgnoreCase)) {
+            $sectionStart = $index
+            break
+        }
+    }
+    if ($sectionStart -lt 0) {
+        if ($lines.Count -gt 0 -and $lines[$lines.Count - 1].Length -ne 0) {
+            $lines.Add('')
+        }
+        $lines.Add('[EngineVersionOverride]')
+        $sectionStart = $lines.Count - 1
+    }
+
+    $sectionEnd = $lines.Count
+    for ($index = $sectionStart + 1; $index -lt $lines.Count; $index++) {
+        $trimmed = $lines[$index].Trim()
+        if ($trimmed.StartsWith('[') -and $trimmed.EndsWith(']')) {
+            $sectionEnd = $index
+            break
+        }
+    }
+
+    foreach ($entry in @(
+        @{ Key = 'MajorVersion'; Value = $MajorVersion }
+        @{ Key = 'MinorVersion'; Value = $MinorVersion }
+    )) {
+        $found = $false
+        for ($index = $sectionStart + 1; $index -lt $sectionEnd; $index++) {
+            if ($lines[$index] -match "^\s*$([Regex]::Escape($entry.Key))\s*=") {
+                $lines[$index] = "$($entry.Key) = $($entry.Value)"
+                $found = $true
+                break
+            }
+        }
+        if (-not $found) {
+            $lines.Insert($sectionEnd, "$($entry.Key) = $($entry.Value)")
+            $sectionEnd++
+        }
+    }
+
+    [IO.File]::WriteAllLines($Path, [string[]]$lines, [Text.UTF8Encoding]::new($false))
+}
+
 $downloadDirectory = Join-Path $repositoryRoot '.tools\downloads'
 $archivePath = Join-Path $downloadDirectory $sdkConfiguration.ue4ss.archiveName
 New-Item -ItemType Directory -Path $downloadDirectory -Force | Out-Null
@@ -67,6 +118,13 @@ try {
     if (-not (Test-Path -LiteralPath $stagedProxy -PathType Leaf) -or
         -not (Test-Path -LiteralPath (Join-Path $stagedUe4ss 'UE4SS.dll') -PathType Leaf)) {
         throw 'The verified UE4SS archive does not contain the expected proxy layout.'
+    }
+
+    if ($null -ne $profile.ue4ss.engineVersionOverride) {
+        Set-EngineVersionOverride `
+            -Path (Join-Path $stagedUe4ss 'UE4SS-settings.ini') `
+            -MajorVersion $profile.ue4ss.engineVersionOverride.majorVersion `
+            -MinorVersion $profile.ue4ss.engineVersionOverride.minorVersion
     }
 
     Copy-Item -LiteralPath (Join-Path $repositoryRoot 'config\Compatibility\DeadzoneRogue\VTableLayout.ini') `

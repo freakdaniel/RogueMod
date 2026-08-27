@@ -1357,7 +1357,7 @@ namespace RogueMod
         {
             return false;
         }
-        const auto* function = reinterpret_cast<get_value_type_hash_fn>(
+        const auto function = reinterpret_cast<get_value_type_hash_fn>(
             vtable[deadzone_get_value_type_hash_vtable_offset / sizeof(void*)]);
         if (function == nullptr || !executable_span(reinterpret_cast<const void*>(function), 4))
         {

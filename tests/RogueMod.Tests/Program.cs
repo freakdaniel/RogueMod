@@ -277,6 +277,8 @@ public sealed class RogueModTests
         var profile = GameProfileLoader.Load(FindRepositoryFile("config/Profiles/deadzone-rogue.json"));
         Assert(profile.SteamAppId == 3228590, "Unexpected Steam app id.");
         Assert(profile.Ue4ss.CompatibilityFiles.Count == 1, "Compatibility file is missing.");
+        Assert(profile.Ue4ss.EngineVersionOverride is { MajorVersion: 5, MinorVersion: 6 },
+            "Deadzone UE4SS engine-version override is missing.");
     }
 
     static void FingerprintsAreNormalized()
@@ -306,11 +308,21 @@ public sealed class RogueModTests
         var modsFile = Combine(directory.Path, profile.Ue4ss.RootRelativePath, "Mods/mods.txt");
         Directory.CreateDirectory(Path.GetDirectoryName(modsFile)!);
         File.WriteAllText(modsFile, "ConsoleEnablerMod : 0\nRogueModBridge : 1\nHelloNativeMod : 1\n");
+        var settingsFile = Combine(directory.Path, profile.Ue4ss.RootRelativePath, "UE4SS-settings.ini");
+        File.WriteAllText(settingsFile, "[EngineVersionOverride]\nMajorVersion = 5\nMinorVersion = 6\n");
 
         var report = new InstallationInspector().Inspect(profile, directory.Path);
         Assert(report.IsCompatible, string.Join(Environment.NewLine, report.Checks.Where(check => check.Status == DiagnosticStatus.Fail)));
         Assert(report.Checks.Single(check => check.Id == "built-in-mods").Status == DiagnosticStatus.Pass,
             "Enabled RogueMod components were mistaken for bundled UE4SS mods.");
+        Assert(report.Checks.Single(check => check.Id == "ue4ss-engine-version").Status == DiagnosticStatus.Pass,
+            "The required UE4SS engine-version override was not accepted.");
+
+        File.WriteAllText(settingsFile, "[EngineVersionOverride]\nMajorVersion = \nMinorVersion = \n");
+        var unsafeReport = new InstallationInspector().Inspect(profile, directory.Path);
+        Assert(!unsafeReport.IsCompatible
+            && unsafeReport.Checks.Single(check => check.Id == "ue4ss-engine-version").Status == DiagnosticStatus.Fail,
+            "An unpinned UE4SS engine version was not rejected.");
     }
 
     static void ManifestRejectsUnsafeEntryPoint()
@@ -442,6 +454,8 @@ public sealed class RogueModTests
         var modsFile = Combine(gameDirectory.Path, profile.Ue4ss.RootRelativePath, "Mods/mods.txt");
         Directory.CreateDirectory(Path.GetDirectoryName(modsFile)!);
         File.WriteAllText(modsFile, "ConsoleEnablerMod : 0\nKeybinds : 1\n");
+        var settingsFile = Combine(gameDirectory.Path, profile.Ue4ss.RootRelativePath, "UE4SS-settings.ini");
+        File.WriteAllText(settingsFile, "[EngineVersionOverride]\nMajorVersion = \nMinorVersion = \nDebugBuild = \n");
 
         var result = new RogueModRuntimeInstaller().Install(profile, gameDirectory.Path, packageDirectory.Path);
         var expectedRuntimeRoot = Path.Combine(gameDirectory.Path, RogueModLayout.RuntimeDirectoryName);
@@ -458,6 +472,10 @@ public sealed class RogueModTests
         var lines = File.ReadAllLines(modsFile);
         Assert(lines.Count(line => line == "RogueModBridge : 1") == 1, "Runtime was not activated exactly once.");
         Assert(Array.IndexOf(lines, "RogueModBridge : 1") < Array.IndexOf(lines, "Keybinds : 1"), "Runtime was inserted below Keybinds.");
+        var settings = File.ReadAllText(settingsFile);
+        Assert(settings.Contains("MajorVersion = 5", StringComparison.Ordinal)
+            && settings.Contains("MinorVersion = 6", StringComparison.Ordinal),
+            "Runtime installation did not pin the UE4SS engine version.");
 
         var legacyMod = Path.Combine(result.Destination, "managed-mods", "user.mod");
         Directory.CreateDirectory(Path.Combine(legacyMod, "dlls"));
@@ -856,7 +874,8 @@ public sealed class RogueModTests
                 { "name": "SoftTarget", "type": "SoftObjectProperty", "property_class": "/Script/Engine.Actor", "offset": 416, "array_dim": 1, "size": 40, "flags": "CPF_Edit | CPF_BlueprintVisible | CPF_UObjectWrapper" },
                 { "name": "ScoresByName", "type": "MapProperty", "offset": 440, "array_dim": 1, "size": 80, "key_prop": { "name": "Key", "type": "IntProperty", "offset": 0, "array_dim": 1, "size": 4, "flags": "CPF_IsPlainOldData | CPF_NoDestructor" }, "value_prop": { "name": "Value", "type": "StrProperty", "offset": 0, "array_dim": 1, "size": 16, "flags": "CPF_IsPlainOldData | CPF_NoDestructor" }, "flags": "CPF_BlueprintVisible" },
                 { "name": "UniqueScores", "type": "SetProperty", "offset": 456, "array_dim": 1, "size": 80, "key_prop": { "name": "Element", "type": "IntProperty", "offset": 0, "array_dim": 1, "size": 4, "flags": "CPF_IsPlainOldData | CPF_NoDestructor" }, "flags": "CPF_BlueprintVisible" },
-                { "name": "Loadout", "type": "StructProperty", "struct": "/Script/Valhalla.PlayerLoadoutEntry", "offset": 536, "array_dim": 1, "size": 48, "flags": "CPF_BlueprintVisible" }
+                { "name": "Loadout", "type": "StructProperty", "struct": "/Script/Valhalla.PlayerLoadoutEntry", "offset": 536, "array_dim": 1, "size": 48, "flags": "CPF_BlueprintVisible" },
+                { "name": "PlayerLoadoutEntry", "type": "StructProperty", "struct": "/Script/Valhalla.PlayerLoadoutEntry", "offset": 584, "array_dim": 1, "size": 48, "flags": "CPF_BlueprintVisible" }
               ]
             },
             "/Game/Test.BP_Player_C:SetHealth": {
@@ -963,7 +982,8 @@ public sealed class RogueModTests
         var output = Path.Combine(directory.Path, "sdk");
         var abstractionsProject = FindRepositoryFile("src/RogueMod.Abstractions/RogueMod.Abstractions.csproj");
         var result = new CSharpSdkGenerator().Generate(model, output, "DeadzoneRogue.Sdk", abstractionsProject);
-        var source = File.ReadAllText(result.SourcePath);
+        var generatedSource = File.ReadAllText(result.SourcePath);
+        var source = generatedSource.Replace("global::DeadzoneRogue.Sdk.", string.Empty, StringComparison.Ordinal);
         var secondOutput = Path.Combine(directory.Path, "sdk-repeat");
         var repeatedResult = new CSharpSdkGenerator().Generate(model, secondOutput, "DeadzoneRogue.Sdk", abstractionsProject);
         Assert(File.ReadAllBytes(result.SourcePath).SequenceEqual(File.ReadAllBytes(repeatedResult.SourcePath)),
@@ -986,6 +1006,10 @@ public sealed class RogueModTests
         Assert(source.Contains("public IReadOnlyDictionary<int, string> ScoresByName", StringComparison.Ordinal), "Generated TMap property is missing.");
         Assert(source.Contains("public IReadOnlySet<int> UniqueScores", StringComparison.Ordinal), "Generated TSet property is missing.");
         Assert(source.Contains("public PlayerLoadoutEntry Loadout", StringComparison.Ordinal), "Generated non-POD struct property is missing.");
+        Assert(generatedSource.Contains(
+                "global::DeadzoneRogue.Sdk.PlayerLoadoutEntry.FromUnrealValue(ReadValue(__PlayerLoadoutEntry))",
+                StringComparison.Ordinal),
+            "Generated type references were not globally qualified against a colliding member name.");
         Assert(source.Contains("public readonly record struct PlayerLoadoutEntry", StringComparison.Ordinal), "Generated non-POD struct is missing.");
         Assert(source.Contains("public string DisplayName { get; init; }", StringComparison.Ordinal), "Generated non-POD struct FString field is missing.");
         Assert(source.Contains("public int Level { get; init; }", StringComparison.Ordinal), "Generated non-POD struct scalar field is missing.");
