@@ -292,20 +292,15 @@ internal static string? ValueDescriptorExpressionOrNull(CsType type, string desc
             changed = false;
             foreach (var type in structs.Values)
             {
-                var fields = type.Properties.Where(property => !HasFlag(property.Flags, "CPF_Parm")).ToArray();
                 if (supported.Contains(type.Path)
-                    // UE exposes several atomic native wrappers (for example
-                    // FVector_NetQuantize) as derived structs with no reflected fields.
-                    // Their native wire representation is therefore an empty field list;
-                    // structs that add reflected fields still require explicit inherited
-                    // layout support and remain untyped.
-                    || (type.SuperPath is not null && fields.Length != 0)
                     || type.Size <= 0
                     || type.Alignment <= 0)
                 {
                     continue;
                 }
-                if (fields.All(field => IsSupportedStructField(field, structs, supported, type.Size)))
+
+                var allFields = GetAllStructFields(type, structs);
+                if (allFields.All(field => IsSupportedStructField(field, structs, supported, type.Size)))
                 {
                     supported.Add(type.Path);
                     changed = true;
@@ -313,6 +308,52 @@ internal static string? ValueDescriptorExpressionOrNull(CsType type, string desc
             }
         }
         return supported;
+    }
+
+    internal static IReadOnlyList<UnrealSdkProperty> GetAllStructFields(
+        UnrealSdkType type,
+        IReadOnlyDictionary<string, UnrealSdkType> structs)
+    {
+        // Build chain from derived → base
+        var chain = new List<UnrealSdkType>();
+        var visited = new HashSet<string>(StringComparer.Ordinal);
+        var current = type;
+
+        while (current != null && visited.Add(current.Path))
+        {
+            chain.Add(current);
+            if (current.SuperPath is not null && structs.TryGetValue(current.SuperPath, out var superType))
+            {
+                current = superType;
+            }
+            else
+            {
+                current = null;
+            }
+        }
+
+        // Reverse to get base → derived, then append properties in that order.
+        // This preserves original property order for flat structs (no reverse on direct list).
+        chain.Reverse();
+
+        var result = new List<UnrealSdkProperty>();
+        foreach (var t in chain)
+        {
+            foreach (var prop in t.Properties.Where(p => !HasFlag(p.Flags, "CPF_Parm")))
+            {
+                result.Add(prop);
+            }
+        }
+
+        // For atomic wrappers (have super but 0 own reflected fields, like Vector_NetQuantize),
+        // keep them as empty (0 fields) to match what the native bridge returns.
+        // Do not inherit the base fields for transport.
+        if (type.SuperPath is not null && type.Properties.Count(p => !HasFlag(p.Flags, "CPF_Parm")) == 0)
+        {
+            result.Clear();
+        }
+
+        return result;
     }
 
     private static string WriteSetValueExpression(CsType type, string valueExpression, string setDescriptorExpression, int containerDepth)

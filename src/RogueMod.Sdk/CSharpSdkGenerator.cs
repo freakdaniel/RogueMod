@@ -198,6 +198,9 @@ public sealed class CSharpSdkGenerator
     {
         var builder = new StringBuilder();
         var supportedStructPaths = BuildSupportedStructPaths(model.Types);
+        var allStructs = model.Types
+            .Where(t => t.Kind == UnrealSdkTypeKind.Struct)
+            .ToDictionary(t => t.Path, StringComparer.Ordinal);
         var normalizedNamespace = NormalizeNamespace(rootNamespace);
         var referenceTypeNames = typeNames.ToDictionary(
             pair => pair.Key,
@@ -220,7 +223,7 @@ public sealed class CSharpSdkGenerator
                     WriteEnum(builder, type, typeNames[type.Path]);
                     break;
                 case UnrealSdkTypeKind.Struct:
-                    WriteStruct(builder, type, typeNames[type.Path], referenceTypeNames, supportedStructPaths);
+                    WriteStruct(builder, type, typeNames[type.Path], referenceTypeNames, supportedStructPaths, allStructs);
                     break;
                 case UnrealSdkTypeKind.Class:
                     WriteClass(builder, type, typeNames[type.Path], referenceTypeNames, supportedStructPaths);
@@ -252,12 +255,16 @@ public sealed class CSharpSdkGenerator
         UnrealSdkType type,
         string typeName,
         IReadOnlyDictionary<string, string> typeNames,
-        IReadOnlySet<string> supportedStructPaths)
+        IReadOnlySet<string> supportedStructPaths,
+        IReadOnlyDictionary<string, UnrealSdkType> allStructs)
     {
         builder.Append("public readonly record struct ").Append(typeName).AppendLine();
         builder.AppendLine("{");
         var used = new HashSet<string>(StringComparer.Ordinal) { typeName };
-        foreach (var property in type.Properties.Where(property => !HasFlag(property.Flags, "CPF_Parm")))
+
+        var allFields = CSharpTypeTranslator.GetAllStructFields(type, allStructs);
+
+        foreach (var property in allFields)
         {
             var name = UniqueIdentifier(property.Name, used);
             var propertyType = ResolveType(property.Type, property.ArrayDimension, typeNames, supportedStructPaths);
@@ -265,7 +272,7 @@ public sealed class CSharpSdkGenerator
         }
         if (supportedStructPaths.Contains(type.Path))
         {
-            WriteStructAdapter(builder, type, typeName, typeNames, supportedStructPaths);
+            WriteStructAdapter(builder, type, typeName, typeNames, supportedStructPaths, allStructs);
         }
         builder.AppendLine("}");
     }
@@ -755,9 +762,11 @@ public sealed class CSharpSdkGenerator
         UnrealSdkType type,
         string typeName,
         IReadOnlyDictionary<string, string> typeNames,
-        IReadOnlySet<string> supportedStructPaths)
+        IReadOnlySet<string> supportedStructPaths,
+        IReadOnlyDictionary<string, UnrealSdkType> allStructs)
     {
-        var fields = type.Properties.Where(property => !HasFlag(property.Flags, "CPF_Parm")).ToArray();
+        var fields = CSharpTypeTranslator.GetAllStructFields(type, allStructs).ToArray();
+
         var used = new HashSet<string>(StringComparer.Ordinal) { typeName };
         var fieldNames = fields.ToDictionary(field => field, field => UniqueIdentifier(field.Name, used));
 

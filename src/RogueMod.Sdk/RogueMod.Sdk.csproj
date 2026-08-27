@@ -12,6 +12,7 @@
     <PackageProjectUrl>https://github.com/freakdaniel/RogueMod</PackageProjectUrl>
     <RepositoryUrl>https://github.com/freakdaniel/RogueMod.git</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
+    <OutputType>Library</OutputType>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <IncludeSymbols>true</IncludeSymbols>
     <SymbolPackageFormat>snupkg</SymbolPackageFormat>
