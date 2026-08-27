@@ -13,6 +13,8 @@ RogueMod extends reflection support as complete vertical slices: JMAP import, ge
 | POD, no-destructor script structs | Yes | Yes | Yes | Yes | generated immutable record struct |
 | `TArray<T>` | Yes | Yes | Yes | Yes | `IReadOnlyList<T>` |
 | nested `TArray<TArray<T>>` | Yes | Yes | Yes | No target in current JMAP | recursive `IReadOnlyList<T>` |
+| `TMap<K,V>` (scalar keys) | Yes, read-only | No | Yes | Pending live probe | `IReadOnlyDictionary<K,V>` |
+| `TSet<T>` | Yes, read-only | No | Yes | Pending live probe | `IReadOnlySet<T>` |
 | `TOptional<T>` with a supported non-container value | Yes | Yes | Yes | Yes, property set/unset/restore | `UnrealOptional<T>` |
 | `TWeakObjectPtr<T>` | Yes | Yes | Yes | Yes, property null/restore | generated wrapper / serial-validated `UnrealObjectHandle` |
 | `TLazyObjectPtr<T>` / `FLazyObjectPtr` | Yes | Yes | Yes | Yes, pending/null/restore | `UnrealLazyObjectReference<T>` with persistent `UnrealGuid` |
@@ -41,8 +43,8 @@ Lazy object references are advertised through `UnrealReflectionCapabilities.Lazy
 
 | Family | Current boundary | Required safe implementation |
 |---|---|---|
-| `TMap<K,V>` | JMAP imports key/value metadata; transport is absent | live key/value descriptors, sparse storage iteration, construction, destruction, and hash reindexing through Unreal APIs |
-| `TSet<T>` | JMAP imports element metadata; transport is absent | live element descriptor plus Unreal-owned set allocation and hash maintenance |
+| `TMap<K,V>` writes | reads only; writes rejected | construction, destruction, and hash reindexing through Unreal APIs |
+| `TSet<T>` writes | reads only; writes rejected | live element descriptor plus Unreal-owned set allocation and hash maintenance |
 | non-POD structs | rejected | per-field construction/destruction using live `FProperty` operations |
 | fixed native arrays (`array_dim > 1`) | rejected | descriptor-aware element addressing distinct from dynamic `TArray` |
 | UTF-8/ANSI string property variants | rejected | explicit encoding and Unreal-owned lifetime functions |
@@ -51,7 +53,7 @@ Lazy object references are advertised through `UnrealReflectionCapabilities.Lazy
 
 The captured 1.4 JMAP currently contains 1,163 map properties, 586 soft-object properties, 380 interface properties, 369 weak-object properties, 194 sets, 26 optionals, and 5 lazy-object properties. No nested array was present in this snapshot, so nested arrays are transport-tested but not game-confirmed.
 
-`TMap` and `TSet` deliberately remain unsupported at runtime. RogueMod does not infer `FScriptMap`, `FScriptSet`, sparse-array, or hash layout from process memory. Their future transport must use the pinned RE-UE4SS container implementation (`FScriptMap`/`FScriptSet` helpers and property lifecycle operations) through a compiled native adapter; if that SDK layer is unavailable, the bridge rejects these property kinds before touching game memory.
+`TMap` and `TSet` reads are advertised through `UnrealReflectionCapabilities.MapSetProperties`. The bridge does not guess container layout from process memory. For the pinned Deadzone: Rogue 1.4.2.0 build, every live `FMapProperty`/`FSetProperty` reports an 80-byte `FScriptMap`/`FScriptSet` footprint (the Valhalla fork adds eight bytes over vanilla UE 5.6.1's 72), and every map/set read is gated on that footprint plus the runtime `FScriptMapLayout`/`FScriptSetLayout` returned by the pinned UE4SS exports. Sparse iteration reads only the vanilla-layout `TScriptSparseArray` `Data`/`AllocationFlags` fields at offsets 0/16 and derives the element count from the allocation bits, so the fork's trailing eight bytes do not affect reads. A game update that changes the footprint or the runtime layout disables the family instead of dereferencing bad offsets. Values cross the ABI as a bounded array of alternating key/value wire values (maps) or element wire values (sets); keys are scalar-only, and map values and set elements may contain one nested `TArray`. Writes are rejected before touching game memory until the game's own `FScriptSet`/`FScriptMap` construction and rehash operations are available through a compiled adapter.
 
 Interface reads, UFunction parameters, and hook replacement are covered by the automated native-ABI transport test through kind 22 (`FScriptInterface`). On 2026-08-27 the live probe verified interface reads and persistent writes on a real `ChooserColumnBool.InputValue` interface property: set (`SetInterfacePropertyByName`, the self-referential value implements the interface), clear (direct null write), and restore all round-tripped, every probe feature passed, and the game exited without a crash report, so interface references are game-confirmed including persistent writes.
 

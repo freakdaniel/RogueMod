@@ -1,4 +1,5 @@
 #include "UnrealMutationBackend.hpp"
+#include "UnrealReflectionApi.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -288,6 +289,27 @@ namespace
         return result == RogueMod::MutationAttempt::Unsupported
             && destination == reinterpret_cast<void*>(1);
     }
+
+    bool test_script_bit_array_uses_inline_allocation()
+    {
+        RogueMod::ScriptContainers::ScriptBitArray flags{};
+        flags.inline_data[0] = 1U;
+        flags.num_bits = 1;
+        flags.max_bits = 128;
+        return flags.data() == flags.inline_data
+            && (flags.data()[0] & 1U) != 0;
+    }
+
+    bool test_script_bit_array_uses_secondary_allocation()
+    {
+        std::uint32_t external_words[]{2U};
+        RogueMod::ScriptContainers::ScriptBitArray flags{};
+        flags.secondary_data = external_words;
+        flags.num_bits = 129;
+        flags.max_bits = 160;
+        return flags.data() == external_words
+            && (flags.data()[0] & 2U) != 0;
+    }
 }
 
 int main()
@@ -325,6 +347,16 @@ int main()
     if (!test_object_assignment_rejects_unvalidated_accessor())
     {
         std::cerr << "unvalidated object accessor rejection test failed\n";
+        return 1;
+    }
+    if (!test_script_bit_array_uses_inline_allocation())
+    {
+        std::cerr << "script bit array inline allocation test failed\n";
+        return 1;
+    }
+    if (!test_script_bit_array_uses_secondary_allocation())
+    {
+        std::cerr << "script bit array secondary allocation test failed\n";
         return 1;
     }
     return 0;

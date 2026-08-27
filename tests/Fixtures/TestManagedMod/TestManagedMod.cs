@@ -52,6 +52,13 @@ public sealed class TestManagedMod : IRogueMod, IRogueModGameEvents
                 var scoreGroups = playerController.ScoreGroups;
                 _logger.Log(ModLogLevel.Information, $"property:ScoreGroups={FormatGroups(scoreGroups)}");
                 playerController.ScoreGroups = scoreGroups;
+                if ((context.Unreal.Capabilities & UnrealReflectionCapabilities.MapSetProperties) != 0)
+                {
+                    var scoresByName = playerController.ScoresByName;
+                    _logger.Log(ModLogLevel.Information, $"property:ScoresByName={FormatMap(scoresByName)}");
+                    var uniqueScores = playerController.UniqueScores;
+                    _logger.Log(ModLogLevel.Information, $"property:UniqueScores={string.Join(',', uniqueScores)}");
+                }
                 var optionalScore = playerController.OptionalScore;
                 _logger.Log(ModLogLevel.Information, $"property:OptionalScore={FormatOptional(optionalScore)}");
                 playerController.OptionalScore = optionalScore;
@@ -110,6 +117,9 @@ public sealed class TestManagedMod : IRogueMod, IRogueModGameEvents
 
     private static string FormatGroups(IReadOnlyList<IReadOnlyList<int>> groups) =>
         string.Join('|', groups.Select(group => string.Join(',', group)));
+
+    private static string FormatMap(IReadOnlyDictionary<int, string> map) =>
+        string.Join(':', map.Select(pair => $"{pair.Key}:{pair.Value}"));
 
     private static string FormatOptional<T>(UnrealOptional<T> value) =>
         value.IsSet ? $"set:{value.Value}" : "unset";
@@ -197,6 +207,16 @@ public sealed class TestManagedMod : IRogueMod, IRogueModGameEvents
             new("/Script/Engine.PlayerController", "Scores", "ArrayProperty", 1680, 1, "CPF_Protected", 16, Array: IntArrayDescriptor);
         private static readonly UnrealPropertyDescriptor ScoreGroupsProperty =
             new("/Script/Engine.PlayerController", "ScoreGroups", "ArrayProperty", 1696, 1, "CPF_Protected", 16, Array: NestedIntArrayDescriptor);
+        private static readonly UnrealPropertyDescriptor ScoresByNameProperty =
+            new("/Script/Engine.PlayerController", "ScoresByName", "MapProperty", 1712, 1, "CPF_Protected", 80)
+            {
+                Map = new UnrealMapDescriptor("IntProperty", 4, "StrProperty", 16)
+            };
+        private static readonly UnrealPropertyDescriptor UniqueScoresProperty =
+            new("/Script/Engine.PlayerController", "UniqueScores", "SetProperty", 1720, 1, "CPF_Protected", 80)
+            {
+                Set = new UnrealSetDescriptor("IntProperty", 4)
+            };
         private static readonly UnrealPropertyDescriptor OptionalScoreProperty =
             new("/Script/Engine.PlayerController", "OptionalScore", "OptionalProperty", 1712, 1, "CPF_Protected", 8)
             {
@@ -377,6 +397,21 @@ public sealed class TestManagedMod : IRogueMod, IRogueModGameEvents
         {
             get => UnpackNestedArray(ReadValue(ScoreGroupsProperty));
             set => WriteValue(ScoreGroupsProperty, PackNestedArray(value));
+        }
+
+        public IReadOnlyDictionary<int, string> ScoresByName
+        {
+            get => UnrealMapValue.ToDictionary<int, string>(
+                ReadValue(ScoresByNameProperty),
+                key => key.As<int>(),
+                value => value.As<string>());
+        }
+
+        public IReadOnlySet<int> UniqueScores
+        {
+            get => UnrealSetValue.ToSet<int>(
+                ReadValue(UniqueScoresProperty),
+                value => value.As<int>());
         }
 
         public UnrealOptional<int> OptionalScore

@@ -73,15 +73,25 @@ public sealed class RogueModTests
         Assert((uint)NativePropertyKind.Optional == 18, "Optional ABI kind changed.");
         Assert((uint)NativePropertyKind.LazyObject == 20, "Lazy-object ABI kind changed.");
         Assert((uint)NativePropertyKind.Interface == 22, "Interface ABI kind changed.");
+        Assert((uint)NativePropertyKind.Map == 23, "Map ABI kind changed.");
+        Assert((uint)NativePropertyKind.Set == 24, "Set ABI kind changed.");
 
         Assert(NativeReflectionTypeRegistry.GetPropertyKind("EnumProperty:/Script/Test.Mode", 4) == NativePropertyKind.UInt32,
             "Enum storage was not resolved through the shared type registry.");
         Assert(NativeReflectionTypeRegistry.GetPropertyKind("ArrayProperty", 16) == NativePropertyKind.Array,
             "TArray was not resolved through the shared type registry.");
+        Assert(NativeReflectionTypeRegistry.GetPropertyKind("MapProperty", 80) == NativePropertyKind.Map,
+            "TMap was not resolved through the shared type registry.");
+        Assert(NativeReflectionTypeRegistry.GetPropertyKind("SetProperty", 80) == NativePropertyKind.Set,
+            "TSet was not resolved through the shared type registry.");
         Assert(NativeReflectionTypeRegistry.GetPropertyKind("InterfaceProperty:/Script/TeamSupport.WithTeamInterface", 16) == NativePropertyKind.Interface,
             "FScriptInterface was not resolved through the shared type registry.");
         Assert(NativeReflectionTypeRegistry.DecodePropertyKind(17U | 6U << 8) == NativePropertyKind.Array,
             "Nested container encoding did not preserve the outer ABI kind.");
+        Assert(NativeReflectionTypeRegistry.DecodePropertyKind(23U | 6U << 8 | 13U << 16) == NativePropertyKind.Map,
+            "TMap encoding did not preserve the outer ABI kind.");
+        Assert(NativeReflectionTypeRegistry.DecodePropertyKind(24U | 6U << 8) == NativePropertyKind.Set,
+            "TSet encoding did not preserve the outer ABI kind.");
 
         const float floatValue = 13.25F;
         var floatWire = NativeScalarValueCodec.Encode(NativePropertyKind.Float, floatValue);
@@ -707,6 +717,8 @@ public sealed class RogueModTests
             Assert(NativeBootstrapTestCallbacks.ArrayPropertyWritten, "Generated-style TArray property was not written.");
             Assert(NativeBootstrapTestCallbacks.Messages.Contains("[C#:sample.mod] property:ScoreGroups=7,8|9"), "Generated-style nested TArray property was not read.");
             Assert(NativeBootstrapTestCallbacks.NestedArrayPropertyWritten, "Generated-style nested TArray property was not written.");
+            Assert(NativeBootstrapTestCallbacks.Messages.Contains("[C#:sample.mod] property:ScoresByName=7:Rogue:8:Vera"), "Generated-style TMap property was not read.");
+            Assert(NativeBootstrapTestCallbacks.Messages.Contains("[C#:sample.mod] property:UniqueScores=7,8,9"), "Generated-style TSet property was not read.");
             Assert(NativeBootstrapTestCallbacks.Messages.Contains("[C#:sample.mod] property:OptionalScore=set:11"), "Generated-style TOptional property was not read.");
             Assert(NativeBootstrapTestCallbacks.OptionalPropertyWritten, "Generated-style TOptional property was not written.");
             Assert(NativeBootstrapTestCallbacks.Messages.Contains("[C#:sample.mod] property:OptionalUnsetScore=unset"), "Generated-style unset TOptional property was not read.");
@@ -824,7 +836,9 @@ public sealed class RogueModTests
                 { "name": "PreferredScore", "type": "OptionalProperty", "offset": 376, "array_dim": 1, "size": 8, "inner": { "name": "PreferredScore", "type": "IntProperty", "offset": 0, "array_dim": 1, "size": 4, "flags": "CPF_IsPlainOldData | CPF_NoDestructor" }, "flags": "CPF_Edit | CPF_BlueprintVisible | CPF_ZeroConstructor" },
                 { "name": "WeakTarget", "type": "WeakObjectProperty", "property_class": "/Script/Engine.Actor", "offset": 384, "array_dim": 1, "size": 8, "flags": "CPF_Edit | CPF_BlueprintVisible | CPF_UObjectWrapper" },
                 { "name": "LazyTarget", "type": "LazyObjectProperty", "property_class": "/Script/Engine.Actor", "offset": 392, "array_dim": 1, "size": 24, "flags": "CPF_Edit | CPF_BlueprintVisible | CPF_UObjectWrapper" },
-                { "name": "SoftTarget", "type": "SoftObjectProperty", "property_class": "/Script/Engine.Actor", "offset": 416, "array_dim": 1, "size": 40, "flags": "CPF_Edit | CPF_BlueprintVisible | CPF_UObjectWrapper" }
+                { "name": "SoftTarget", "type": "SoftObjectProperty", "property_class": "/Script/Engine.Actor", "offset": 416, "array_dim": 1, "size": 40, "flags": "CPF_Edit | CPF_BlueprintVisible | CPF_UObjectWrapper" },
+                { "name": "ScoresByName", "type": "MapProperty", "offset": 440, "array_dim": 1, "size": 80, "key_prop": { "name": "Key", "type": "IntProperty", "offset": 0, "array_dim": 1, "size": 4, "flags": "CPF_IsPlainOldData | CPF_NoDestructor" }, "value_prop": { "name": "Value", "type": "StrProperty", "offset": 0, "array_dim": 1, "size": 16, "flags": "CPF_IsPlainOldData | CPF_NoDestructor" }, "flags": "CPF_BlueprintVisible" },
+                { "name": "UniqueScores", "type": "SetProperty", "offset": 456, "array_dim": 1, "size": 80, "key_prop": { "name": "Element", "type": "IntProperty", "offset": 0, "array_dim": 1, "size": 4, "flags": "CPF_IsPlainOldData | CPF_NoDestructor" }, "flags": "CPF_BlueprintVisible" }
               ]
             },
             "/Game/Test.BP_Player_C:SetHealth": {
@@ -951,6 +965,12 @@ public sealed class RogueModTests
         Assert(source.Contains("public Actor? WeakTarget", StringComparison.Ordinal), "Generated weak UObject property is missing.");
         Assert(source.Contains("public UnrealLazyObjectReference<Actor> LazyTarget", StringComparison.Ordinal), "Generated identity-preserving lazy UObject property is missing.");
         Assert(source.Contains("public UnrealSoftObjectReference<Actor> SoftTarget", StringComparison.Ordinal), "Generated path-preserving soft UObject property is missing.");
+        Assert(source.Contains("public IReadOnlyDictionary<int, string> ScoresByName", StringComparison.Ordinal), "Generated TMap property is missing.");
+        Assert(source.Contains("public IReadOnlySet<int> UniqueScores", StringComparison.Ordinal), "Generated TSet property is missing.");
+        Assert(source.Contains("Map = new(\"IntProperty\", 4, \"StrProperty\", 16", StringComparison.Ordinal), "Generated TMap descriptor is missing.");
+        Assert(source.Contains("Set = new(\"IntProperty\", 4", StringComparison.Ordinal), "Generated TSet descriptor is missing.");
+        Assert(source.Contains("UnrealMapValue.ToDictionary<int, string>", StringComparison.Ordinal), "Generated TMap property did not emit dictionary transport.");
+        Assert(source.Contains("UnrealSetValue.ToSet<int>", StringComparison.Ordinal), "Generated TSet property did not emit set transport.");
         Assert(source.Contains("public void SetHealth(float newHealth)", StringComparison.Ordinal), "Generated void UFunction wrapper is missing.");
         Assert(source.Contains("public float GetHealth()", StringComparison.Ordinal), "Generated return value wrapper is missing.");
         Assert(source.Contains("public void SetPlayerName(string newName)", StringComparison.Ordinal), "Generated FString UFunction wrapper is missing.");

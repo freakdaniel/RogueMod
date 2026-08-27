@@ -117,7 +117,8 @@ if (Test-Path -LiteralPath $runtimeMetadataPath -PathType Leaf) {
         gameVersion = $sdkConfiguration.gameVersion
         assemblySha256 = (Get-FileHash -LiteralPath $generatedAssembly -Algorithm SHA256).Hash.ToLowerInvariant()
     }) -Force
-    $runtimeMetadata | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $runtimeMetadataPath -Encoding utf8NoBOM
+    $runtimeMetadataJson = $runtimeMetadata | ConvertTo-Json -Depth 4
+    [IO.File]::WriteAllText($runtimeMetadataPath, $runtimeMetadataJson, [Text.UTF8Encoding]::new($false))
 
     $runtimeArchive = Join-Path $repositoryRoot '.artifacts\runtime\RogueMod.Runtime-win-x64.zip'
     if (Test-Path -LiteralPath $runtimeArchive -PathType Leaf) {
@@ -135,7 +136,10 @@ $modsFile = Join-Path $ue4ssRoot 'Mods\mods.txt'
 if (Test-Path -LiteralPath $modsFile -PathType Leaf) {
     $updatedMods = Get-Content -LiteralPath $modsFile |
         ForEach-Object { if ($_ -match '^\s*RogueModSdkDumper\s*:') { 'RogueModSdkDumper : 0' } else { $_ } }
-    $updatedMods | Set-Content -LiteralPath $modsFile -Encoding utf8NoBOM
+    [IO.File]::WriteAllLines(
+        $modsFile,
+        [string[]]$updatedMods,
+        [Text.UTF8Encoding]::new($false))
 }
 
 Write-Output "Game SDK package: $packageOutput\$($sdkConfiguration.packageId).$($sdkConfiguration.packageVersion).nupkg"

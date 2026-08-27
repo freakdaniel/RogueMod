@@ -357,7 +357,8 @@ public sealed class CSharpSdkGenerator
             builder.Append("        get => ").Append(type.Name).Append(".FromUnrealValue(ReadValue(")
                 .Append(descriptorName).AppendLine("));");
         }
-        else if (type.ArrayAdapter || type.OptionalAdapter || type.LazyObjectAdapter || type.SoftObjectAdapter)
+        else if (type.ArrayAdapter || type.OptionalAdapter || type.LazyObjectAdapter || type.SoftObjectAdapter
+            || type.SetAdapter || type.MapAdapter)
         {
             builder.Append("        get => ").Append(ReadValueExpression(
                 type,
@@ -369,7 +370,7 @@ public sealed class CSharpSdkGenerator
             builder.Append("        get => Read<").Append(type.Name).Append(">(").Append(descriptorName).AppendLine(");");
         }
 
-        if (CanWrite(property.Flags))
+        if (CanWrite(property.Flags) && !type.MapAdapter && !type.SetAdapter)
         {
             if (type.StructAdapter)
             {
@@ -479,7 +480,7 @@ public sealed class CSharpSdkGenerator
                 ? $"UnrealValue.From({value}?.Handle ?? UnrealObjectHandle.Null)"
                 : type.StructAdapter ? $"{value}.ToUnrealValue()"
                 : type.LazyObjectAdapter || type.SoftObjectAdapter ? $"{value}.ToUnrealValue()"
-                : type.ArrayAdapter || type.OptionalAdapter
+                : type.ArrayAdapter || type.OptionalAdapter || type.SetAdapter || type.MapAdapter
                     ? WriteValueExpression(
                         type,
                         value,

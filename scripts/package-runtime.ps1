@@ -100,7 +100,11 @@ $metadata = [ordered]@{
     bridgeSha256 = (Get-FileHash -LiteralPath (Join-Path $packageRoot 'dlls\main.dll') -Algorithm SHA256).Hash.ToLowerInvariant()
     managedRuntimeSha256 = (Get-FileHash -LiteralPath (Join-Path $managedRoot 'RogueMod.Runtime.dll') -Algorithm SHA256).Hash.ToLowerInvariant()
 }
-$metadata | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $packageRoot 'runtime-package.json') -Encoding utf8NoBOM
+$metadataJson = $metadata | ConvertTo-Json
+[IO.File]::WriteAllText(
+    (Join-Path $packageRoot 'runtime-package.json'),
+    $metadataJson,
+    [Text.UTF8Encoding]::new($false))
 
 if (Test-Path -LiteralPath $archivePath) {
     Remove-Item -LiteralPath $archivePath -Force

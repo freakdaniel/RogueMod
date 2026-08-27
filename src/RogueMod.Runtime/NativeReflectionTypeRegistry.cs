@@ -11,6 +11,13 @@ internal static class NativeReflectionTypeRegistry
 {
     private const uint PropertyKindMask = 0xff;
 
+    /// <summary>
+    /// FScriptMap/FScriptSet footprint confirmed by the live JMap dump for Deadzone: Rogue
+    /// 1.4.2.0 (all 1163 TMap and 194 TSet properties report element size 80). The Valhalla
+    /// fork deviates from vanilla UE 5.6.1 (72 bytes), so a mismatch disables the family.
+    /// </summary>
+    internal const int DeadzoneScriptMapSize = 80;
+
     internal static NativePropertyKind GetPropertyKind(string unrealType, int size)
     {
         var separator = unrealType.IndexOf(':');
@@ -43,6 +50,8 @@ internal static class NativeReflectionTypeRegistry
             "StructProperty" when size > 0 => NativePropertyKind.Struct,
             "ArrayProperty" when size == 16 => NativePropertyKind.Array,
             "OptionalProperty" when size > 0 => NativePropertyKind.Optional,
+            "MapProperty" when size == DeadzoneScriptMapSize => NativePropertyKind.Map,
+            "SetProperty" when size == DeadzoneScriptMapSize => NativePropertyKind.Set,
             _ => throw new NotSupportedException($"Property type '{unrealType}' is not supported by RogueMod ABI 13.")
         };
     }
@@ -157,7 +166,9 @@ internal enum NativePropertyKind : uint
     WeakObject = 19,
     LazyObject = 20,
     SoftObject = 21,
-    Interface = 22
+    Interface = 22,
+    Map = 23,
+    Set = 24
 }
 
 internal enum StructFieldKind

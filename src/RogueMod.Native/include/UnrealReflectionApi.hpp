@@ -14,6 +14,84 @@
 
 namespace RogueMod
 {
+    /// <summary>
+    /// Authoritative UE 5.6.1 sparse-container layouts from the vanilla engine source
+    /// (Core/Public/Containers/{SparseArray,Set,Map,BitArray}.h). The Valhalla fork adds a
+    /// trailing eight bytes (FScriptMap/FScriptSet element size 80 instead of vanilla 72) but
+    /// keeps the iteration-relevant members at the vanilla offsets; the bridge validates the
+    /// 80-byte footprint and the runtime layout before reading any element.
+    /// </summary>
+    namespace ScriptContainers
+    {
+        struct SparseArrayLayout
+        {
+            std::int32_t alignment;
+            std::int32_t size;
+        };
+
+        static_assert(sizeof(SparseArrayLayout) == 8);
+
+        struct SetLayout
+        {
+            std::int32_t hash_next_id_offset;
+            std::int32_t hash_index_offset;
+            std::int32_t size;
+            SparseArrayLayout sparse_array_layout;
+        };
+
+        static_assert(sizeof(SetLayout) == 20);
+
+        struct MapLayout
+        {
+            std::int32_t value_offset;
+            SetLayout set_layout;
+        };
+
+        static_assert(sizeof(MapLayout) == 24);
+
+        struct ScriptArray
+        {
+            void* data;
+            std::int32_t num;
+            std::int32_t max;
+        };
+
+        static_assert(sizeof(ScriptArray) == 16);
+
+        struct ScriptBitArray
+        {
+            // FDefaultBitArrayAllocator is TInlineAllocator<4>. Its allocator instance
+            // stores four uint32 words inline and only uses secondary_data after that
+            // capacity is exceeded.
+            std::uint32_t inline_data[4];
+            void* secondary_data;
+            std::int32_t num_bits;
+            std::int32_t max_bits;
+
+            [[nodiscard]] const std::uint32_t* data() const
+            {
+                return secondary_data != nullptr
+                    ? static_cast<const std::uint32_t*>(secondary_data)
+                    : inline_data;
+            }
+        };
+
+        static_assert(offsetof(ScriptBitArray, secondary_data) == 16);
+        static_assert(offsetof(ScriptBitArray, num_bits) == 24);
+        static_assert(sizeof(ScriptBitArray) == 32);
+
+        struct ScriptSparseArray
+        {
+            ScriptArray data;
+            ScriptBitArray allocation_flags;
+            std::int32_t first_free_index;
+            std::int32_t num_free_indices;
+        };
+
+        static_assert(offsetof(ScriptSparseArray, first_free_index) == 48);
+        static_assert(sizeof(ScriptSparseArray) == 56);
+    }
+
     class UnrealReflectionApi
     {
       public:
@@ -114,6 +192,11 @@ namespace RogueMod
         using get_next_field_as_property_fn = void*(__cdecl*)(void*);
         using get_array_inner_fn = void**(__cdecl*)(void*);
         using get_optional_value_property_fn = void**(__cdecl*)(const void*);
+        using get_key_prop_fn = void* const*(__cdecl*)(const void*);
+        using get_value_prop_fn = void* const*(__cdecl*)(const void*);
+        using get_element_prop_fn = void* const*(__cdecl*)(const void*);
+        using get_map_layout_fn = const ScriptContainers::MapLayout*(__cdecl*)(const void*);
+        using get_set_layout_fn = const ScriptContainers::SetLayout*(__cdecl*)(const void*);
         using optional_is_set_fn = bool(__cdecl*)(const void*, const void*);
         using optional_get_value_pointer_for_read_if_set_fn = const void*(__cdecl*)(const void*, const void*);
         using optional_mark_set_and_get_initialized_value_pointer_fn = void*(__cdecl*)(const void*, void*);
@@ -144,6 +227,28 @@ namespace RogueMod
             const void* address,
             std::uint32_t encoded_kind,
             UnrealValue& value) const;
+        [[nodiscard]] bool marshal_map_value(
+            void* property,
+            const void* address,
+            std::uint32_t encoded_kind,
+            UnrealValue& value) const;
+        [[nodiscard]] bool marshal_set_value(
+            void* property,
+            const void* address,
+            std::uint32_t encoded_kind,
+            UnrealValue& value) const;
+        [[nodiscard]] bool read_script_set(
+            const void* container,
+            const ScriptContainers::SetLayout& layout,
+            std::int32_t& max_index,
+            std::int32_t& num) const;
+        [[nodiscard]] bool script_set_element(
+            const void* container,
+            const ScriptContainers::SetLayout& layout,
+            std::int32_t index,
+            const void*& element) const;
+        [[nodiscard]] bool validate_script_set_layout(
+            const ScriptContainers::SetLayout& layout) const;
         /// Writes one marshalled value through its live property. Returns 0 on success or a
         /// negative native status: -4 generic rejection, -7 object setter rejected the
         /// write, -8 the previous value changed and could not be restored.
@@ -226,6 +331,11 @@ namespace RogueMod
         get_first_property_fn m_get_first_property{};
         get_next_field_as_property_fn m_get_next_field_as_property{};
         get_array_inner_fn m_get_array_inner{};
+        get_key_prop_fn m_get_key_prop{};
+        get_value_prop_fn m_get_value_prop{};
+        get_element_prop_fn m_get_element_prop{};
+        get_map_layout_fn m_get_map_layout{};
+        get_set_layout_fn m_get_set_layout{};
         get_optional_value_property_fn m_get_optional_value_property{};
         optional_is_set_fn m_optional_is_set{};
         optional_get_value_pointer_for_read_if_set_fn m_optional_get_value_pointer_for_read_if_set{};

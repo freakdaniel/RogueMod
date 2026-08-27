@@ -19,6 +19,12 @@ namespace RogueMod
         constexpr std::size_t maximum_marshaled_struct_size = 1'048'576;
         constexpr std::size_t maximum_marshaled_array_length = 1'048'576;
         constexpr std::size_t maximum_marshaled_array_bytes = 64U * 1024U * 1024U;
+        // FScriptMap/FScriptSet footprint confirmed by the live JMap dump for Deadzone: Rogue
+        // 1.4.2.0 (every TMap/TSet property reports element size 80). The Valhalla fork
+        // deviates from vanilla UE 5.6.1 (72 bytes); a mismatch disables the family.
+        constexpr std::size_t deadzone_script_map_size = 80;
+        constexpr std::uint32_t map_key_kind_shift = 8U;
+        constexpr std::uint32_t map_value_kind_shift = 16U;
         constexpr std::size_t deadzone_object_ptr_setter_vtable_offset = 0x1e8;
         constexpr std::size_t deadzone_object_getter_vtable_offset = 0x200;
         constexpr std::uint32_t property_kind_mask = 0xffU;
@@ -110,7 +116,7 @@ namespace RogueMod
         void free_marshaled_value(UnrealValue& value)
         {
             const auto kind = decode_kind(value.kind);
-            if (kind == UnrealPropertyKind::Array && value.data != 0)
+            if ((kind == UnrealPropertyKind::Array || kind == UnrealPropertyKind::Set) && value.data != 0)
             {
                 if (value.reserved <= maximum_marshaled_array_length)
                 {
@@ -118,6 +124,19 @@ namespace RogueMod
                     for (std::uint32_t index = 0; index < value.reserved; ++index)
                     {
                         free_marshaled_value(elements[index]);
+                    }
+                }
+                CoTaskMemFree(reinterpret_cast<void*>(value.data));
+            }
+            else if (kind == UnrealPropertyKind::Map && value.data != 0)
+            {
+                if (value.reserved <= maximum_marshaled_array_length)
+                {
+                    auto* entries = reinterpret_cast<UnrealValue*>(value.data);
+                    for (std::uint32_t index = 0; index < value.reserved; ++index)
+                    {
+                        free_marshaled_value(entries[index * 2]);
+                        free_marshaled_value(entries[index * 2 + 1]);
                     }
                 }
                 CoTaskMemFree(reinterpret_cast<void*>(value.data));
@@ -483,6 +502,21 @@ namespace RogueMod
         m_get_array_inner = load_export<get_array_inner_fn>(
             ue4ss_module,
             "?GetInner@FArrayProperty@Unreal@RC@@QEAAAEAPEAVFProperty@23@XZ");
+        m_get_key_prop = load_export<get_key_prop_fn>(
+            ue4ss_module,
+            "?GetKeyProp@FMapProperty@Unreal@RC@@QEBAAEAPEBVFProperty@23@XZ");
+        m_get_value_prop = load_export<get_value_prop_fn>(
+            ue4ss_module,
+            "?GetValueProp@FMapProperty@Unreal@RC@@QEBAAEAPEBVFProperty@23@XZ");
+        m_get_element_prop = load_export<get_element_prop_fn>(
+            ue4ss_module,
+            "?GetElementProp@FSetProperty@Unreal@RC@@QEBAAEAPEBVFProperty@23@XZ");
+        m_get_map_layout = load_export<get_map_layout_fn>(
+            ue4ss_module,
+            "?GetMapLayout@FMapProperty@Unreal@RC@@QEBAAEBUFScriptMapLayout@23@XZ");
+        m_get_set_layout = load_export<get_set_layout_fn>(
+            ue4ss_module,
+            "?GetSetLayout@FSetProperty@Unreal@RC@@QEBAAEBUFScriptSetLayout@23@XZ");
         m_get_optional_value_property = load_export<get_optional_value_property_fn>(
             ue4ss_module,
             "?GetValueProperty@FOptionalProperty@Unreal@RC@@QEBAAEAPEAVFProperty@23@XZ");
@@ -673,6 +707,13 @@ namespace RogueMod
                        && m_soft_object_destroy_value != nullptr
                     ? (1U << 12)
                     : 0U)
+                | (m_get_key_prop != nullptr
+                       && m_get_value_prop != nullptr
+                       && m_get_element_prop != nullptr
+                       && m_get_map_layout != nullptr
+                       && m_get_set_layout != nullptr
+                    ? (1U << 14)
+                    : 0U)
                 | (1U << 13)
             : 0U;
     }
@@ -698,14 +739,29 @@ namespace RogueMod
         const auto fixed_size = expected_value_size(kind);
         if ((kind != UnrealPropertyKind::Struct
              && kind != UnrealPropertyKind::Optional
+             && kind != UnrealPropertyKind::Map
+             && kind != UnrealPropertyKind::Set
              && fixed_size != element_size)
             || ((kind == UnrealPropertyKind::Struct || kind == UnrealPropertyKind::Optional)
                 && element_size > maximum_marshaled_struct_size))
         {
             return false;
         }
+        if ((kind == UnrealPropertyKind::Map || kind == UnrealPropertyKind::Set)
+            && element_size != deadzone_script_map_size)
+        {
+            return false;
+        }
 
         value.kind = encoded_kind;
+        if (kind == UnrealPropertyKind::Map)
+        {
+            return marshal_map_value(property, address, encoded_kind, value);
+        }
+        if (kind == UnrealPropertyKind::Set)
+        {
+            return marshal_set_value(property, address, encoded_kind, value);
+        }
         if (kind == UnrealPropertyKind::Boolean)
         {
             value.data = m_get_bool_in_container(property, address, 0) ? 1U : 0U;
@@ -967,6 +1023,304 @@ namespace RogueMod
         return true;
     }
 
+    bool UnrealReflectionApi::validate_script_set_layout(
+        const ScriptContainers::SetLayout& layout) const
+    {
+        // These are the fields the bridge reads during sparse iteration; a game update that
+        // moves any of them disables the map/set family instead of dereferencing bad offsets.
+        return layout.hash_next_id_offset >= 0
+            && layout.hash_index_offset >= 0
+            && layout.size > 0
+            && layout.sparse_array_layout.alignment > 0
+            && layout.sparse_array_layout.size > 0
+            && layout.sparse_array_layout.size >= layout.size
+            && static_cast<std::size_t>(layout.sparse_array_layout.size) <= maximum_marshaled_struct_size;
+    }
+
+    bool UnrealReflectionApi::read_script_set(
+        const void* container,
+        const ScriptContainers::SetLayout& layout,
+        std::int32_t& max_index,
+        std::int32_t& num) const
+    {
+        // FScriptSet stores its elements in a TScriptSparseArray (vanilla UE 5.6.1 layout):
+        // Data{ptr,num,max} begins at 0. AllocationFlags begins at 16 and uses
+        // FDefaultBitArrayAllocator (four inline uint32 words, then a secondary allocation
+        // pointer, NumBits and MaxBits). The free-list fields begin at 48. Iteration only
+        // needs Data and AllocationFlags, so the live count is derived from allocation bits.
+        const auto* sparse = static_cast<const ScriptContainers::ScriptSparseArray*>(container);
+        max_index = sparse->data.num;
+        if (max_index < 0 || static_cast<std::size_t>(max_index) > maximum_marshaled_array_length)
+        {
+            return false;
+        }
+        const auto& flags = sparse->allocation_flags;
+        if (max_index == 0)
+        {
+            if (sparse->data.data != nullptr || flags.num_bits != 0)
+            {
+                return false;
+            }
+            num = 0;
+            return true;
+        }
+        const auto* allocation_words = flags.data();
+        if (flags.num_bits < max_index)
+        {
+            return false;
+        }
+        std::int32_t count = 0;
+        for (std::int32_t index = 0; index < max_index; ++index)
+        {
+            const auto word = static_cast<std::size_t>(index) / 32U;
+            const auto bit = static_cast<std::uint32_t>(index) % 32U;
+            if ((allocation_words[word] & (1U << bit)) != 0)
+            {
+                ++count;
+            }
+        }
+        num = count;
+        return true;
+    }
+
+    bool UnrealReflectionApi::script_set_element(
+        const void* container,
+        const ScriptContainers::SetLayout& layout,
+        std::int32_t index,
+        const void*& element) const
+    {
+        const auto* sparse = static_cast<const ScriptContainers::ScriptSparseArray*>(container);
+        if (index < 0 || index >= sparse->data.num || sparse->data.data == nullptr)
+        {
+            return false;
+        }
+        const auto& flags = sparse->allocation_flags;
+        if (index >= flags.num_bits)
+        {
+            return false;
+        }
+        const auto* allocation_words = flags.data();
+        const auto word = static_cast<std::size_t>(index) / 32U;
+        const auto bit = static_cast<std::uint32_t>(index) % 32U;
+        if ((allocation_words[word] & (1U << bit)) == 0)
+        {
+            return false;
+        }
+        const auto stride = static_cast<std::size_t>(layout.sparse_array_layout.size);
+        element = static_cast<const std::byte*>(sparse->data.data) + stride * static_cast<std::size_t>(index);
+        return true;
+    }
+
+    bool UnrealReflectionApi::marshal_set_value(
+        void* property,
+        const void* address,
+        std::uint32_t encoded_kind,
+        UnrealValue& value) const
+    {
+        if (property == nullptr || address == nullptr)
+        {
+            return false;
+        }
+        const auto* element_pointer = m_get_element_prop(property);
+        auto* element_prop = element_pointer == nullptr ? nullptr : *element_pointer;
+        const auto* set_layout_pointer = m_get_set_layout(property);
+        if (element_prop == nullptr || set_layout_pointer == nullptr
+            || !validate_script_set_layout(*set_layout_pointer))
+        {
+            return false;
+        }
+        const auto element_encoded_kind = decode_array_element_encoded_kind(encoded_kind);
+        const auto element_kind = decode_kind(element_encoded_kind);
+        if (element_kind == static_cast<UnrealPropertyKind>(0))
+        {
+            return false;
+        }
+        const auto* element_size_pointer = m_get_element_size(element_prop);
+        if (element_size_pointer == nullptr || *element_size_pointer <= 0)
+        {
+            return false;
+        }
+        const auto element_size = static_cast<std::size_t>(*element_size_pointer);
+        const auto element_fixed_size = expected_value_size(element_kind);
+        if ((element_kind != UnrealPropertyKind::Struct
+             && element_kind != UnrealPropertyKind::Array
+             && element_fixed_size != element_size)
+            || (element_kind == UnrealPropertyKind::Array && element_size != 16)
+            || (element_kind == UnrealPropertyKind::Struct && element_size > maximum_marshaled_struct_size))
+        {
+            return false;
+        }
+
+        std::int32_t max_index = 0;
+        std::int32_t num = 0;
+        if (!read_script_set(address, *set_layout_pointer, max_index, num))
+        {
+            return false;
+        }
+        if (static_cast<std::size_t>(num) > maximum_marshaled_array_length
+            || static_cast<std::size_t>(num) > maximum_marshaled_array_bytes / sizeof(UnrealValue))
+        {
+            return false;
+        }
+        if (num == 0)
+        {
+            return true;
+        }
+        const auto wire_size = static_cast<std::size_t>(num) * sizeof(UnrealValue);
+        auto* elements = static_cast<UnrealValue*>(CoTaskMemAlloc(wire_size));
+        if (elements == nullptr)
+        {
+            value = {};
+            return false;
+        }
+        std::memset(elements, 0, wire_size);
+        value.reserved = static_cast<std::uint32_t>(num);
+        value.data = reinterpret_cast<std::uint64_t>(elements);
+
+        std::int32_t written = 0;
+        for (std::int32_t index = 0; index < max_index; ++index)
+        {
+            const void* element = nullptr;
+            if (!script_set_element(address, *set_layout_pointer, index, element))
+            {
+                continue;
+            }
+            if (written >= num)
+            {
+                free_marshaled_value(value);
+                value = {};
+                return false;
+            }
+            if (!marshal_typed_value(element_prop, element, element_encoded_kind, elements[written]))
+            {
+                free_marshaled_value(value);
+                value = {};
+                return false;
+            }
+            ++written;
+        }
+        if (written != num)
+        {
+            free_marshaled_value(value);
+            value = {};
+            return false;
+        }
+        return true;
+    }
+
+    bool UnrealReflectionApi::marshal_map_value(
+        void* property,
+        const void* address,
+        std::uint32_t encoded_kind,
+        UnrealValue& value) const
+    {
+        if (property == nullptr || address == nullptr)
+        {
+            return false;
+        }
+        const auto* key_pointer = m_get_key_prop(property);
+        auto* key_prop = key_pointer == nullptr ? nullptr : *key_pointer;
+        const auto* value_pointer = m_get_value_prop(property);
+        auto* value_prop = value_pointer == nullptr ? nullptr : *value_pointer;
+        const auto* map_layout_pointer = m_get_map_layout(property);
+        if (key_prop == nullptr || value_prop == nullptr || map_layout_pointer == nullptr
+            || map_layout_pointer->value_offset < 0
+            || !validate_script_set_layout(map_layout_pointer->set_layout))
+        {
+            return false;
+        }
+        const auto key_encoded_kind = (encoded_kind >> map_key_kind_shift) & 0xffU;
+        const auto value_encoded_kind = encoded_kind >> map_value_kind_shift;
+        const auto key_kind = decode_kind(key_encoded_kind);
+        const auto value_kind = decode_kind(value_encoded_kind);
+        if (key_kind == static_cast<UnrealPropertyKind>(0)
+            || value_kind == static_cast<UnrealPropertyKind>(0))
+        {
+            return false;
+        }
+        const auto* key_size_pointer = m_get_element_size(key_prop);
+        const auto* value_size_pointer = m_get_element_size(value_prop);
+        if (key_size_pointer == nullptr || *key_size_pointer <= 0
+            || value_size_pointer == nullptr || *value_size_pointer <= 0)
+        {
+            return false;
+        }
+        const auto key_size = static_cast<std::size_t>(*key_size_pointer);
+        const auto value_size = static_cast<std::size_t>(*value_size_pointer);
+        const auto key_fixed_size = expected_value_size(key_kind);
+        const auto value_fixed_size = expected_value_size(value_kind);
+        if ((key_kind != UnrealPropertyKind::Struct && key_fixed_size != key_size)
+            || (key_kind == UnrealPropertyKind::Struct && key_size > maximum_marshaled_struct_size)
+            || (value_kind != UnrealPropertyKind::Struct
+                && value_kind != UnrealPropertyKind::Array
+                && value_fixed_size != value_size)
+            || (value_kind == UnrealPropertyKind::Array && value_size != 16)
+            || (value_kind == UnrealPropertyKind::Struct && value_size > maximum_marshaled_struct_size))
+        {
+            return false;
+        }
+
+        std::int32_t max_index = 0;
+        std::int32_t num = 0;
+        if (!read_script_set(address, map_layout_pointer->set_layout, max_index, num))
+        {
+            return false;
+        }
+        if (static_cast<std::size_t>(num) > maximum_marshaled_array_length
+            || static_cast<std::size_t>(num) > maximum_marshaled_array_bytes / (2U * sizeof(UnrealValue)))
+        {
+            return false;
+        }
+        if (num == 0)
+        {
+            return true;
+        }
+        const auto wire_size = static_cast<std::size_t>(num) * 2U * sizeof(UnrealValue);
+        auto* entries = static_cast<UnrealValue*>(CoTaskMemAlloc(wire_size));
+        if (entries == nullptr)
+        {
+            value = {};
+            return false;
+        }
+        std::memset(entries, 0, wire_size);
+        value.reserved = static_cast<std::uint32_t>(num);
+        value.data = reinterpret_cast<std::uint64_t>(entries);
+
+        const auto value_offset = static_cast<std::size_t>(map_layout_pointer->value_offset);
+        std::int32_t written = 0;
+        for (std::int32_t index = 0; index < max_index; ++index)
+        {
+            const void* pair = nullptr;
+            if (!script_set_element(address, map_layout_pointer->set_layout, index, pair))
+            {
+                continue;
+            }
+            if (written >= num)
+            {
+                free_marshaled_value(value);
+                value = {};
+                return false;
+            }
+            const auto* pair_bytes = static_cast<const std::byte*>(pair);
+            const auto slot = static_cast<std::size_t>(written) * 2U;
+            if (!marshal_typed_value(key_prop, pair_bytes, key_encoded_kind, entries[slot])
+                || !marshal_typed_value(value_prop, pair_bytes + value_offset, value_encoded_kind, entries[slot + 1]))
+            {
+                free_marshaled_value(value);
+                value = {};
+                return false;
+            }
+            ++written;
+        }
+        if (written != num)
+        {
+            free_marshaled_value(value);
+            value = {};
+            return false;
+        }
+        return true;
+    }
+
     std::int32_t UnrealReflectionApi::assign_typed_value(
         void* property,
         void* address,
@@ -978,6 +1332,13 @@ namespace RogueMod
             return -4;
         }
         const auto kind = decode_kind(encoded_kind);
+        if (kind == UnrealPropertyKind::Map || kind == UnrealPropertyKind::Set)
+        {
+            // TMap/TSet writes are not implemented yet; constructing FScriptMap/FScriptSet
+            // values requires the game's element constructors and rehash, which the bridge
+            // does not resolve. Reject before touching any memory.
+            return -4;
+        }
         const auto* element_size_pointer = m_get_element_size(property);
         if (element_size_pointer == nullptr || *element_size_pointer <= 0)
         {

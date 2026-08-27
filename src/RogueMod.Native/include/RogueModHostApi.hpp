@@ -40,6 +40,8 @@ namespace RogueMod
         LazyObject = 20,
         SoftObject = 21,
         Interface = 22,
+        Map = 23,
+        Set = 24,
     };
 
     struct UnrealValue

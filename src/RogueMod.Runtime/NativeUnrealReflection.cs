@@ -34,6 +34,8 @@ internal sealed unsafe class NativeUnrealReflection(
     private const int LazyObjectStorageSize = UnrealLazyObjectValue.NativeStorageSize;
     private const int ContainerValueKindShift = 8;
     private const uint MaximumEncodedValueKind = 0x00ff_ffff;
+    private const uint MaximumMapKeyEncodedValueKind = 0xff;
+    private const uint MaximumMapValueEncodedValueKind = 0xffff;
     private static readonly ConcurrentDictionary<ulong, HookRegistration> HookRegistrations = new();
     private static long nextHookContext;
 
@@ -239,6 +241,8 @@ internal sealed unsafe class NativeUnrealReflection(
                 descriptor.Struct,
                 descriptor.Array,
                 descriptor.Optional,
+                descriptor.Map,
+                descriptor.Set,
                 inputAllocations);
         }
         if (suppliedArguments.Count != 0)
@@ -386,8 +390,8 @@ internal sealed unsafe class NativeUnrealReflection(
                     $"UFunction parameter '{function.Path}:{descriptor.Name}' is a fixed native array; RogueMod supports scalar parameters and dynamic TArray values only.");
             }
             var kind = GetPropertyKind(descriptor.UnrealType, descriptor.Size);
-            EnsurePropertyCapabilities(kind, descriptor.Array, descriptor.Optional);
-            var encodedKind = EncodePropertyKind(kind, descriptor.Array, descriptor.Optional);
+            EnsurePropertyCapabilities(kind, descriptor.Array, descriptor.Optional, descriptor.Map, descriptor.Set);
+            var encodedKind = EncodePropertyKind(kind, descriptor.Array, descriptor.Optional, descriptor.Map, descriptor.Set);
             var flags = (descriptor.IsInput ? NativeParameterFlags.Input : 0)
                 | (descriptor.IsOutput ? NativeParameterFlags.Output : 0)
                 | (descriptor.IsReturn ? NativeParameterFlags.Return : 0);
@@ -518,6 +522,8 @@ internal sealed unsafe class NativeUnrealReflection(
                 descriptor.Struct,
                 descriptor.Array,
                 descriptor.Optional,
+                descriptor.Map,
+                descriptor.Set,
                 replacementAllocations);
 
             // The native bridge owns both the incoming snapshot and the replacement after
@@ -542,8 +548,8 @@ internal sealed unsafe class NativeUnrealReflection(
         }
 
         var kind = GetPropertyKind(property.UnrealType, property.Size);
-        EnsurePropertyCapabilities(kind, property.Array, property.Optional);
-        var encodedKind = EncodePropertyKind(kind, property.Array, property.Optional);
+        EnsurePropertyCapabilities(kind, property.Array, property.Optional, property.Map, property.Set);
+        var encodedKind = EncodePropertyKind(kind, property.Array, property.Optional, property.Map, property.Set);
         NativeUnrealValue nativeValue;
         int result;
         fixed (char* propertyName = property.Name)
@@ -558,7 +564,7 @@ internal sealed unsafe class NativeUnrealReflection(
 
         try
         {
-            return ToManagedValue(kind, nativeValue, property.Struct, property.Array, property.Optional);
+            return ToManagedValue(kind, nativeValue, property.Struct, property.Array, property.Optional, property.Map, property.Set);
         }
         finally
         {
@@ -571,7 +577,9 @@ internal sealed unsafe class NativeUnrealReflection(
         NativeUnrealValue nativeValue,
         UnrealStructDescriptor? structDescriptor = null,
         UnrealArrayDescriptor? arrayDescriptor = null,
-        UnrealOptionalDescriptor? optionalDescriptor = null)
+        UnrealOptionalDescriptor? optionalDescriptor = null,
+        UnrealMapDescriptor? mapDescriptor = null,
+        UnrealSetDescriptor? setDescriptor = null)
     {
         object managedValue = kind switch
         {
@@ -581,6 +589,8 @@ internal sealed unsafe class NativeUnrealReflection(
             NativePropertyKind.Struct => ReadNativeStruct(nativeValue, RequireStructDescriptor(structDescriptor)),
             NativePropertyKind.Array => ReadNativeArray(nativeValue, RequireArrayDescriptor(arrayDescriptor)),
             NativePropertyKind.Optional => ReadNativeOptional(nativeValue, RequireOptionalDescriptor(optionalDescriptor)),
+            NativePropertyKind.Map => ReadNativeMap(nativeValue, RequireMapDescriptor(mapDescriptor)),
+            NativePropertyKind.Set => ReadNativeSet(nativeValue, RequireSetDescriptor(setDescriptor)),
             _ => NativeScalarValueCodec.Decode(kind, nativeValue.Data)
         };
         return new UnrealValue(managedValue);
@@ -599,8 +609,8 @@ internal sealed unsafe class NativeUnrealReflection(
         }
 
         var kind = GetPropertyKind(property.UnrealType, property.Size);
-        EnsurePropertyCapabilities(kind, property.Array, property.Optional);
-        var encodedKind = EncodePropertyKind(kind, property.Array, property.Optional);
+        EnsurePropertyCapabilities(kind, property.Array, property.Optional, property.Map, property.Set);
+        var encodedKind = EncodePropertyKind(kind, property.Array, property.Optional, property.Map, property.Set);
         using var inputAllocations = new NativeAllocations();
         var nativeValue = ToNativeValue(
             kind,
@@ -609,6 +619,8 @@ internal sealed unsafe class NativeUnrealReflection(
             property.Struct,
             property.Array,
             property.Optional,
+            property.Map,
+            property.Set,
             inputAllocations);
         int result;
         fixed (char* propertyName = property.Name)
@@ -629,9 +641,16 @@ internal sealed unsafe class NativeUnrealReflection(
         UnrealStructDescriptor? structDescriptor,
         UnrealArrayDescriptor? arrayDescriptor,
         UnrealOptionalDescriptor? optionalDescriptor,
+        UnrealMapDescriptor? mapDescriptor,
+        UnrealSetDescriptor? setDescriptor,
         NativeAllocations allocations)
     {
         var managed = value.Value;
+        if (kind is NativePropertyKind.Map or NativePropertyKind.Set)
+        {
+            throw new NotSupportedException(
+                $"RogueMod does not yet support writing Unreal {(kind == NativePropertyKind.Map ? "TMap" : "TSet")} values.");
+        }
         if (kind is NativePropertyKind.String or NativePropertyKind.Name or NativePropertyKind.Text)
         {
             if (managed is not string text)
@@ -709,30 +728,74 @@ internal sealed unsafe class NativeUnrealReflection(
     private static uint EncodePropertyKind(
         NativePropertyKind kind,
         UnrealArrayDescriptor? arrayDescriptor = null,
-        UnrealOptionalDescriptor? optionalDescriptor = null)
+        UnrealOptionalDescriptor? optionalDescriptor = null,
+        UnrealMapDescriptor? mapDescriptor = null,
+        UnrealSetDescriptor? setDescriptor = null)
     {
-        if (kind is not (NativePropertyKind.Array or NativePropertyKind.Optional))
+        switch (kind)
         {
-            return (uint)kind;
+            case NativePropertyKind.Array:
+            {
+                var descriptor = RequireArrayDescriptor(arrayDescriptor);
+                var elementKind = GetPropertyKind(descriptor.ElementUnrealType, descriptor.ElementSize);
+                var encodedElementKind = EncodePropertyKind(elementKind, descriptor.ElementArray);
+                if (encodedElementKind > MaximumEncodedValueKind)
+                {
+                    throw new NotSupportedException("RogueMod ABI 13 supports at most three nested container levels.");
+                }
+                return (uint)kind | encodedElementKind << ContainerValueKindShift;
+            }
+            case NativePropertyKind.Set:
+            {
+                var descriptor = RequireSetDescriptor(setDescriptor);
+                var elementKind = GetPropertyKind(descriptor.ElementUnrealType, descriptor.ElementSize);
+                var encodedElementKind = EncodePropertyKind(elementKind, descriptor.ElementArray);
+                if (encodedElementKind > MaximumEncodedValueKind)
+                {
+                    throw new NotSupportedException("RogueMod ABI 13 supports at most three nested container levels.");
+                }
+                return (uint)kind | encodedElementKind << ContainerValueKindShift;
+            }
+            case NativePropertyKind.Optional:
+            {
+                var descriptor = RequireOptionalDescriptor(optionalDescriptor);
+                var valueKind = GetPropertyKind(descriptor.ValueUnrealType, descriptor.ValueSize);
+                var encodedValueKind = EncodePropertyKind(valueKind);
+                if (encodedValueKind > MaximumEncodedValueKind)
+                {
+                    throw new NotSupportedException("RogueMod ABI 13 supports at most three nested container levels.");
+                }
+                return (uint)kind | encodedValueKind << ContainerValueKindShift;
+            }
+            case NativePropertyKind.Map:
+            {
+                var descriptor = RequireMapDescriptor(mapDescriptor);
+                var keyKind = GetPropertyKind(descriptor.KeyUnrealType, descriptor.KeySize);
+                if (keyKind is NativePropertyKind.Struct
+                    or NativePropertyKind.Array
+                    or NativePropertyKind.Optional
+                    or NativePropertyKind.Map
+                    or NativePropertyKind.Set)
+                {
+                    throw new NotSupportedException("RogueMod ABI 13 does not support struct or container TMap keys.");
+                }
+                if ((uint)keyKind > MaximumMapKeyEncodedValueKind)
+                {
+                    throw new NotSupportedException("RogueMod ABI 13 supports at most one TMap key kind.");
+                }
+                var valueKind = GetPropertyKind(descriptor.ValueUnrealType, descriptor.ValueSize);
+                var encodedValueKind = EncodePropertyKind(valueKind, descriptor.ValueArray);
+                if (encodedValueKind > MaximumMapValueEncodedValueKind)
+                {
+                    throw new NotSupportedException(
+                        "RogueMod ABI 13 supports at most two nested container levels in a TMap value.");
+                }
+                return (uint)kind | ((uint)keyKind << ContainerValueKindShift)
+                    | (encodedValueKind << (2 * ContainerValueKindShift));
+            }
+            default:
+                return (uint)kind;
         }
-        uint encodedValueKind;
-        if (kind == NativePropertyKind.Array)
-        {
-            var descriptor = RequireArrayDescriptor(arrayDescriptor);
-            var valueKind = GetPropertyKind(descriptor.ElementUnrealType, descriptor.ElementSize);
-            encodedValueKind = EncodePropertyKind(valueKind, descriptor.ElementArray);
-        }
-        else
-        {
-            var descriptor = RequireOptionalDescriptor(optionalDescriptor);
-            var valueKind = GetPropertyKind(descriptor.ValueUnrealType, descriptor.ValueSize);
-            encodedValueKind = EncodePropertyKind(valueKind);
-        }
-        if (encodedValueKind > MaximumEncodedValueKind)
-        {
-            throw new NotSupportedException("RogueMod ABI 13 supports at most three nested container levels.");
-        }
-        return (uint)kind | encodedValueKind << ContainerValueKindShift;
     }
 
     private static string ReadNativeString(NativeUnrealValue value)
@@ -792,6 +855,8 @@ internal sealed unsafe class NativeUnrealReflection(
                 descriptor.ElementStruct,
                 descriptor.ElementArray,
                 null,
+                null,
+                null,
                 allocations);
         }
         return new NativeUnrealValue
@@ -833,6 +898,75 @@ internal sealed unsafe class NativeUnrealReflection(
                 descriptor.ElementArray);
         }
         return new UnrealArrayValue(descriptor, elements);
+    }
+
+    private static UnrealSetValue ReadNativeSet(NativeUnrealValue value, UnrealSetDescriptor descriptor)
+    {
+        if (value.Reserved > MaximumArrayLength || (value.Data == 0 && value.Reserved != 0))
+        {
+            throw new InvalidOperationException(
+                $"The native bridge returned an invalid TSet<{descriptor.ElementUnrealType}> buffer.");
+        }
+        var expectedElementKind = GetPropertyKind(descriptor.ElementUnrealType, descriptor.ElementSize);
+        var expectedEncodedElementKind = EncodePropertyKind(expectedElementKind, descriptor.ElementArray);
+        var expectedEncodedKind = EncodePropertyKind(NativePropertyKind.Set, setDescriptor: descriptor);
+        if (value.Kind != expectedEncodedKind)
+        {
+            throw new InvalidOperationException(
+                $"The native bridge returned a mismatched TSet<{descriptor.ElementUnrealType}> element kind.");
+        }
+        var elements = new UnrealValue[checked((int)value.Reserved)];
+        var values = (NativeUnrealValue*)value.Data;
+        for (var index = 0; index < elements.Length; index++)
+        {
+            if (values[index].Kind != expectedEncodedElementKind)
+            {
+                throw new InvalidOperationException(
+                    $"The native bridge returned a mismatched element at TSet index {index}.");
+            }
+            elements[index] = ToManagedValue(
+                expectedElementKind,
+                values[index],
+                descriptor.ElementStruct,
+                descriptor.ElementArray);
+        }
+        return new UnrealSetValue(descriptor, elements);
+    }
+
+    private static UnrealMapValue ReadNativeMap(NativeUnrealValue value, UnrealMapDescriptor descriptor)
+    {
+        if (value.Reserved > MaximumArrayLength || (value.Data == 0 && value.Reserved != 0))
+        {
+            throw new InvalidOperationException(
+                $"The native bridge returned an invalid TMap<{descriptor.KeyUnrealType}, {descriptor.ValueUnrealType}> buffer.");
+        }
+        var expectedKeyKind = GetPropertyKind(descriptor.KeyUnrealType, descriptor.KeySize);
+        var expectedValueKind = GetPropertyKind(descriptor.ValueUnrealType, descriptor.ValueSize);
+        var expectedEncodedValueKind = EncodePropertyKind(expectedValueKind, descriptor.ValueArray);
+        var expectedEncodedKind = EncodePropertyKind(
+            NativePropertyKind.Map,
+            mapDescriptor: descriptor);
+        if (value.Kind != expectedEncodedKind)
+        {
+            throw new InvalidOperationException(
+                $"The native bridge returned a mismatched TMap<{descriptor.KeyUnrealType}, {descriptor.ValueUnrealType}> key/value kind.");
+        }
+        var entries = new List<KeyValuePair<UnrealValue, UnrealValue>>(checked((int)value.Reserved));
+        var values = (NativeUnrealValue*)value.Data;
+        for (var index = 0; index < checked((int)value.Reserved); index++)
+        {
+            var key = values[index * 2];
+            var entryValue = values[index * 2 + 1];
+            if (key.Kind != (uint)expectedKeyKind || entryValue.Kind != expectedEncodedValueKind)
+            {
+                throw new InvalidOperationException(
+                    $"The native bridge returned a mismatched entry at TMap index {index}.");
+            }
+            entries.Add(new KeyValuePair<UnrealValue, UnrealValue>(
+                ToManagedValue(expectedKeyKind, key, descriptor.KeyStruct),
+                ToManagedValue(expectedValueKind, entryValue, descriptor.ValueStruct, descriptor.ValueArray)));
+        }
+        return new UnrealMapValue(descriptor, entries);
     }
 
     private static NativeUnrealValue WriteNativeLazyObject(
@@ -952,6 +1086,8 @@ internal sealed unsafe class NativeUnrealReflection(
             encodedValueKind,
             optionalValue.Value,
             descriptor.ValueStruct,
+            null,
+            null,
             null,
             null,
             allocations);
@@ -1100,10 +1236,138 @@ internal sealed unsafe class NativeUnrealReflection(
         return descriptor;
     }
 
+    private static (NativePropertyKind Kind, UnrealArrayDescriptor? Array) ValidateContainerValue(
+        string label,
+        string unrealType,
+        int size,
+        int byteOffset,
+        int byteMask,
+        int fieldMask,
+        UnrealStructDescriptor? structDescriptor,
+        UnrealArrayDescriptor? arrayDescriptor,
+        bool allowContainers,
+        bool allowStruct)
+    {
+        if (string.IsNullOrWhiteSpace(unrealType) || size <= 0 || size > MaximumStructSize)
+        {
+            throw new InvalidOperationException($"The generated SDK provided an invalid {label} descriptor.");
+        }
+        var kind = GetPropertyKind(unrealType, size);
+        if (kind == NativePropertyKind.Array)
+        {
+            if (!allowContainers)
+            {
+                throw new NotSupportedException($"RogueMod ABI 13 does not support container {label}s.");
+            }
+            if (arrayDescriptor is null)
+            {
+                throw new InvalidOperationException($"The generated SDK did not provide a nested {label} descriptor.");
+            }
+            RequireArrayDescriptor(arrayDescriptor);
+            return (kind, arrayDescriptor);
+        }
+        if (arrayDescriptor is not null)
+        {
+            throw new InvalidOperationException($"A non-array {label} cannot have a nested array descriptor.");
+        }
+        if (kind == NativePropertyKind.Boolean
+            && (byteOffset < 0 || byteOffset >= size
+                || byteMask is < 0 or > byte.MaxValue
+                || fieldMask is < 0 or > byte.MaxValue))
+        {
+            throw new InvalidOperationException($"The generated SDK provided an invalid {label} bool layout.");
+        }
+        if (kind == NativePropertyKind.Struct)
+        {
+            if (!allowStruct)
+            {
+                throw new NotSupportedException($"RogueMod ABI 13 does not support struct {label}s.");
+            }
+            var structValue = RequireStructDescriptor(structDescriptor);
+            if (structValue.Size != size)
+            {
+                throw new InvalidOperationException($"The generated SDK provided a mismatched {label} struct size.");
+            }
+        }
+        return (kind, null);
+    }
+
+    private static UnrealSetDescriptor RequireSetDescriptor(UnrealSetDescriptor? descriptor)
+    {
+        if (descriptor is null)
+        {
+            throw new NotSupportedException("The generated SDK did not provide a TSet descriptor.");
+        }
+        var (elementKind, _) = ValidateContainerValue(
+            "TSet element",
+            descriptor.ElementUnrealType,
+            descriptor.ElementSize,
+            descriptor.ElementByteOffset,
+            descriptor.ElementByteMask,
+            descriptor.ElementFieldMask,
+            descriptor.ElementStruct,
+            descriptor.ElementArray,
+            allowContainers: true,
+            allowStruct: true);
+        if (elementKind is NativePropertyKind.Map
+            or NativePropertyKind.Set
+            or NativePropertyKind.Optional)
+        {
+            throw new NotSupportedException("RogueMod ABI 13 does not support nested TMap/TSet/TOptional TSet elements.");
+        }
+        return descriptor;
+    }
+
+    private static UnrealMapDescriptor RequireMapDescriptor(UnrealMapDescriptor? descriptor)
+    {
+        if (descriptor is null)
+        {
+            throw new NotSupportedException("The generated SDK did not provide a TMap descriptor.");
+        }
+        var (keyKind, _) = ValidateContainerValue(
+            "TMap key",
+            descriptor.KeyUnrealType,
+            descriptor.KeySize,
+            descriptor.KeyByteOffset,
+            descriptor.KeyByteMask,
+            descriptor.KeyFieldMask,
+            descriptor.KeyStruct,
+            null,
+            allowContainers: false,
+            allowStruct: false);
+        if (keyKind is NativePropertyKind.Struct
+            or NativePropertyKind.Optional
+            or NativePropertyKind.Map
+            or NativePropertyKind.Set)
+        {
+            throw new NotSupportedException("RogueMod ABI 13 does not support struct or container TMap keys.");
+        }
+        var (valueKind, _) = ValidateContainerValue(
+            "TMap value",
+            descriptor.ValueUnrealType,
+            descriptor.ValueSize,
+            descriptor.ValueByteOffset,
+            descriptor.ValueByteMask,
+            descriptor.ValueFieldMask,
+            descriptor.ValueStruct,
+            descriptor.ValueArray,
+            allowContainers: true,
+            allowStruct: true);
+        if (valueKind is NativePropertyKind.Map
+            or NativePropertyKind.Set
+            or NativePropertyKind.Optional)
+        {
+            throw new NotSupportedException("RogueMod ABI 13 does not support nested TMap/TSet/TOptional TMap values.");
+        }
+        return descriptor;
+    }
+
     private void EnsurePropertyCapabilities(
         NativePropertyKind kind,
         UnrealArrayDescriptor? arrayDescriptor,
-        UnrealOptionalDescriptor? optionalDescriptor)
+        UnrealOptionalDescriptor? optionalDescriptor,
+        UnrealMapDescriptor? mapDescriptor,
+        UnrealSetDescriptor? setDescriptor)
     {
         if (arrayDescriptor?.ElementArray is not null
             && (Capabilities & UnrealReflectionCapabilities.NestedArrays) == 0)
@@ -1134,6 +1398,11 @@ internal sealed unsafe class NativeUnrealReflection(
             && (Capabilities & UnrealReflectionCapabilities.InterfaceReferences) == 0)
         {
             throw new NotSupportedException("The active RogueMod bridge does not support interface references.");
+        }
+        if ((kind == NativePropertyKind.Map || kind == NativePropertyKind.Set)
+            && (Capabilities & UnrealReflectionCapabilities.MapSetProperties) == 0)
+        {
+            throw new NotSupportedException("The active RogueMod bridge does not support TMap/TSet values.");
         }
     }
 
@@ -1334,7 +1603,7 @@ internal sealed unsafe class NativeUnrealReflection(
         {
             return;
         }
-        if (kind == NativePropertyKind.Array)
+        if (kind is NativePropertyKind.Array or NativePropertyKind.Set)
         {
             if (value.Reserved <= MaximumArrayLength)
             {
@@ -1342,6 +1611,20 @@ internal sealed unsafe class NativeUnrealReflection(
                 for (var index = 0U; index < value.Reserved; index++)
                 {
                     FreeNativeAllocation(values[index].Kind, values[index], inputAllocations);
+                }
+            }
+            Marshal.FreeCoTaskMem(unchecked((nint)value.Data));
+            return;
+        }
+        if (kind == NativePropertyKind.Map)
+        {
+            if (value.Reserved <= MaximumArrayLength)
+            {
+                var values = (NativeUnrealValue*)value.Data;
+                for (var index = 0U; index < value.Reserved; index++)
+                {
+                    FreeNativeAllocation(values[index * 2].Kind, values[index * 2], inputAllocations);
+                    FreeNativeAllocation(values[index * 2 + 1].Kind, values[index * 2 + 1], inputAllocations);
                 }
             }
             Marshal.FreeCoTaskMem(unchecked((nint)value.Data));

@@ -128,7 +128,8 @@ public enum UnrealReflectionCapabilities
     ObjectCreation = 1 << 10,
     ActorSpawning = 1 << 11,
     SoftObjectReferences = 1 << 12,
-    InterfaceReferences = 1 << 13
+    InterfaceReferences = 1 << 13,
+    MapSetProperties = 1 << 14
 }
 
 public enum UnrealHookPhase
@@ -169,6 +170,12 @@ public sealed record UnrealPropertyDescriptor(
 {
     /// <summary>Inner-value metadata when this property is a TOptional.</summary>
     public UnrealOptionalDescriptor? Optional { get; init; }
+
+    /// <summary>Key/value metadata when this property is a TMap.</summary>
+    public UnrealMapDescriptor? Map { get; init; }
+
+    /// <summary>Element metadata when this property is a TSet.</summary>
+    public UnrealSetDescriptor? Set { get; init; }
 }
 
 /// <summary>The four native 32-bit components of an Unreal FGuid.</summary>
@@ -209,6 +216,12 @@ public sealed record UnrealParameterDescriptor(
 {
     /// <summary>Inner-value metadata when this parameter is a TOptional.</summary>
     public UnrealOptionalDescriptor? Optional { get; init; }
+
+    /// <summary>Key/value metadata when this parameter is a TMap.</summary>
+    public UnrealMapDescriptor? Map { get; init; }
+
+    /// <summary>Element metadata when this parameter is a TSet.</summary>
+    public UnrealSetDescriptor? Set { get; init; }
 
     public bool IsOutput => HasFlag("CPF_OutParm");
 
@@ -318,6 +331,105 @@ public sealed record UnrealOptionalValue(
     UnrealOptionalDescriptor Descriptor,
     bool IsSet,
     UnrealValue Value);
+
+/// <summary>
+/// Key/value metadata for an Unreal TMap. Keys are scalar-only in RogueMod ABI 13; values may
+/// carry a nested TArray descriptor. The property itself reports an 80-byte FScriptMap on the
+/// supported Deadzone: Rogue 1.4.2.0 / UE 5.6.1 build, which the runtime validates.
+/// </summary>
+public sealed record UnrealMapDescriptor(
+    string KeyUnrealType,
+    int KeySize,
+    string ValueUnrealType,
+    int ValueSize,
+    int KeyByteOffset = 0,
+    int KeyByteMask = 0,
+    int KeyFieldMask = 0,
+    int ValueByteOffset = 0,
+    int ValueByteMask = 0,
+    int ValueFieldMask = 0,
+    UnrealStructDescriptor? KeyStruct = null,
+    UnrealStructDescriptor? ValueStruct = null)
+{
+    /// <summary>Element metadata when this map's value is another TArray.</summary>
+    public UnrealArrayDescriptor? ValueArray { get; init; }
+}
+
+/// <summary>Element metadata for an Unreal TSet.</summary>
+public sealed record UnrealSetDescriptor(
+    string ElementUnrealType,
+    int ElementSize,
+    int ElementByteOffset = 0,
+    int ElementByteMask = 0,
+    int ElementFieldMask = 0,
+    UnrealStructDescriptor? ElementStruct = null)
+{
+    /// <summary>Element metadata when this set contains another TArray.</summary>
+    public UnrealArrayDescriptor? ElementArray { get; init; }
+}
+
+/// <summary>A managed map transported through a generated TMap adapter.</summary>
+public sealed record UnrealMapValue(
+    UnrealMapDescriptor Descriptor,
+    IReadOnlyList<KeyValuePair<UnrealValue, UnrealValue>> Entries)
+{
+    public static UnrealValue From<TKey, TValue>(
+        UnrealMapDescriptor descriptor,
+        IReadOnlyDictionary<TKey, TValue> values,
+        Func<TKey, UnrealValue> encodeKey,
+        Func<TValue, UnrealValue> encodeValue)
+    {
+        ArgumentNullException.ThrowIfNull(descriptor);
+        ArgumentNullException.ThrowIfNull(values);
+        ArgumentNullException.ThrowIfNull(encodeKey);
+        ArgumentNullException.ThrowIfNull(encodeValue);
+        return UnrealValue.From(new UnrealMapValue(
+            descriptor,
+            values
+                .Select(pair => new KeyValuePair<UnrealValue, UnrealValue>(
+                    encodeKey(pair.Key),
+                    encodeValue(pair.Value)))
+                .ToArray()));
+    }
+
+    public static IReadOnlyDictionary<TKey, TValue> ToDictionary<TKey, TValue>(
+        UnrealValue value,
+        Func<UnrealValue, TKey> decodeKey,
+        Func<UnrealValue, TValue> decodeValue)
+        where TKey : notnull
+    {
+        ArgumentNullException.ThrowIfNull(decodeKey);
+        ArgumentNullException.ThrowIfNull(decodeValue);
+        var transported = value.As<UnrealMapValue>();
+        return transported.Entries.ToDictionary(
+            pair => decodeKey(pair.Key),
+            pair => decodeValue(pair.Value));
+    }
+}
+
+/// <summary>A managed set transported through a generated TSet adapter.</summary>
+public sealed record UnrealSetValue(
+    UnrealSetDescriptor Descriptor,
+    IReadOnlyList<UnrealValue> Elements)
+{
+    public static UnrealValue From<T>(
+        UnrealSetDescriptor descriptor,
+        IReadOnlySet<T> values,
+        Func<T, UnrealValue> encode)
+    {
+        ArgumentNullException.ThrowIfNull(descriptor);
+        ArgumentNullException.ThrowIfNull(values);
+        ArgumentNullException.ThrowIfNull(encode);
+        return UnrealValue.From(new UnrealSetValue(descriptor, values.Select(encode).ToArray()));
+    }
+
+    public static IReadOnlySet<T> ToSet<T>(UnrealValue value, Func<UnrealValue, T> decode)
+    {
+        ArgumentNullException.ThrowIfNull(decode);
+        var transported = value.As<UnrealSetValue>();
+        return transported.Elements.Select(decode).ToArray().ToHashSet();
+    }
+}
 
 /// <summary>
 /// Identity-preserving transport for an Unreal FLazyObjectPtr. The persistent GUID remains

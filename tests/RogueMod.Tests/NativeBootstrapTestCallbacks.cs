@@ -31,6 +31,8 @@ internal static unsafe class NativeBootstrapTestCallbacks
     private const uint IntArrayKind = 17U | (6U << 8);
     private const uint NestedIntArrayKind = 17U | (17U << 8) | (6U << 16);
     private const uint OptionalIntKind = 18U | (6U << 8);
+    private const uint MapIntStringKind = 23U | (6U << 8) | (13U << 16);
+    private const uint SetIntKind = 24U | (6U << 8);
 
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     internal static void CaptureLog(int level, char* message)
@@ -91,7 +93,7 @@ internal static unsafe class NativeBootstrapTestCallbacks
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     internal static uint UnrealGetCapabilities() =>
         (1U << 0) | (1U << 1) | (1U << 2) | (1U << 3) | (1U << 4) | (1U << 5) | (1U << 6) | (1U << 7) | (1U << 8) | (1U << 9)
-        | (1U << 10) | (1U << 11) | (1U << 12) | (1U << 13);
+        | (1U << 10) | (1U << 11) | (1U << 12) | (1U << 13) | (1U << 14);
 
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     internal static ulong UnrealCreateObject(ulong classHandle, ulong outerHandle, char* objectName)
@@ -224,6 +226,16 @@ internal static unsafe class NativeBootstrapTestCallbacks
         if (new string(propertyName) == "ScoreGroups" && propertyKind == NestedIntArrayKind)
         {
             *value = AllocateNestedIntArrayValue([[7, 8], [9]]);
+            return 0;
+        }
+        if (new string(propertyName) == "ScoresByName" && propertyKind == MapIntStringKind)
+        {
+            *value = AllocateMapValue([(7, "Rogue"), (8, "Vera")]);
+            return 0;
+        }
+        if (new string(propertyName) == "UniqueScores" && propertyKind == SetIntKind)
+        {
+            *value = AllocateSetValue([7, 8, 9]);
             return 0;
         }
         if (new string(propertyName) == "OptionalScore" && propertyKind == OptionalIntKind)
@@ -707,6 +719,41 @@ internal static unsafe class NativeBootstrapTestCallbacks
         return new NativeUnrealValue
         {
             Kind = NestedIntArrayKind,
+            Reserved = checked((uint)values.Count),
+            Data = unchecked((ulong)pointer)
+        };
+    }
+
+    private static NativeUnrealValue AllocateMapValue(IReadOnlyList<(int Key, string Value)> entries)
+    {
+        var bytes = checked(entries.Count * 2 * sizeof(NativeUnrealValue));
+        var pointer = Marshal.AllocCoTaskMem(bytes);
+        var values = (NativeUnrealValue*)pointer;
+        for (var index = 0; index < entries.Count; index++)
+        {
+            values[index * 2] = new NativeUnrealValue { Kind = 6, Data = unchecked((uint)entries[index].Key) };
+            values[index * 2 + 1] = AllocateStringValue(13, entries[index].Value);
+        }
+        return new NativeUnrealValue
+        {
+            Kind = MapIntStringKind,
+            Reserved = checked((uint)entries.Count),
+            Data = unchecked((ulong)pointer)
+        };
+    }
+
+    private static NativeUnrealValue AllocateSetValue(IReadOnlyList<int> values)
+    {
+        var bytes = checked(values.Count * sizeof(NativeUnrealValue));
+        var pointer = Marshal.AllocCoTaskMem(bytes);
+        var elements = (NativeUnrealValue*)pointer;
+        for (var index = 0; index < values.Count; index++)
+        {
+            elements[index] = new NativeUnrealValue { Kind = 6, Data = unchecked((uint)values[index]) };
+        }
+        return new NativeUnrealValue
+        {
+            Kind = SetIntKind,
             Reserved = checked((uint)values.Count),
             Data = unchecked((ulong)pointer)
         };
