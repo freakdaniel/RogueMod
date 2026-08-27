@@ -284,7 +284,9 @@ internal sealed unsafe class NativeUnrealReflection(
                     nativeParameters[index].Value,
                     descriptor.Struct,
                     descriptor.Array,
-                    descriptor.Optional);
+                    descriptor.Optional,
+                    descriptor.Map,
+                    descriptor.Set);
                 if (descriptor.IsReturn)
                 {
                     returnValue = value;
@@ -449,7 +451,9 @@ internal sealed unsafe class NativeUnrealReflection(
                     parameters[index].Value,
                     descriptor.Struct,
                     descriptor.Array,
-                    descriptor.Optional);
+                    descriptor.Optional,
+                    descriptor.Map,
+                    descriptor.Set);
                 if (descriptor.IsInput)
                 {
                     arguments[descriptor.Name] = value;

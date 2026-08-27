@@ -120,6 +120,21 @@ namespace RogueMod
             }
         }
 
+        std::size_t expected_parameter_size(UnrealPropertyKind kind, std::int32_t declared_size)
+        {
+            if (kind == UnrealPropertyKind::Struct || kind == UnrealPropertyKind::Optional)
+            {
+                return declared_size > 0 ? static_cast<std::size_t>(declared_size) : 0U;
+            }
+            if (kind == UnrealPropertyKind::Map || kind == UnrealPropertyKind::Set)
+            {
+                return declared_size == static_cast<std::int32_t>(deadzone_script_map_size)
+                    ? deadzone_script_map_size
+                    : 0U;
+            }
+            return expected_value_size(kind);
+        }
+
         void free_marshaled_value(UnrealValue& value)
         {
             const auto kind = decode_kind(value.kind);
@@ -2947,10 +2962,7 @@ namespace RogueMod
             {
                 auto& parameter = parameters[index];
                 const auto kind = decode_kind(parameter.kind);
-                const auto size = (kind == UnrealPropertyKind::Struct || kind == UnrealPropertyKind::Optional)
-                        && parameter.size > 0
-                    ? static_cast<std::size_t>(parameter.size)
-                    : expected_value_size(kind);
+                const auto size = expected_parameter_size(kind, parameter.size);
                 const auto* live_offset = m_get_offset(parameter_properties[index]);
                 const auto* live_size = m_get_element_size(parameter_properties[index]);
                 if (size == 0 || parameter.array_dimension != 1 || parameter.offset < 0
@@ -2983,6 +2995,9 @@ namespace RogueMod
                         && (parameter.value.reserved > maximum_marshaled_array_length
                             || (parameter.value.reserved != 0 && parameter.value.data == 0)))
                     || (kind == UnrealPropertyKind::Array
+                        && (parameter.value.reserved > maximum_marshaled_array_length
+                            || (parameter.value.reserved != 0 && parameter.value.data == 0)))
+                    || ((kind == UnrealPropertyKind::Map || kind == UnrealPropertyKind::Set)
                         && (parameter.value.reserved > maximum_marshaled_array_length
                             || (parameter.value.reserved != 0 && parameter.value.data == 0)))
                     || (kind == UnrealPropertyKind::Optional
@@ -3041,9 +3056,7 @@ namespace RogueMod
             {
                 auto& parameter = parameters[index];
                 const auto kind = decode_kind(parameter.kind);
-                const auto size = kind == UnrealPropertyKind::Struct || kind == UnrealPropertyKind::Optional
-                    ? static_cast<std::size_t>(parameter.size)
-                    : expected_value_size(kind);
+                const auto size = expected_parameter_size(kind, parameter.size);
                 const auto is_input = has_flag(parameter.flags, UnrealParameterFlags::Input);
 
                 auto* address = buffer_data + parameter.offset;
@@ -3111,6 +3124,17 @@ namespace RogueMod
                     {
                         return -5;
                     }
+                }
+                else if (kind == UnrealPropertyKind::Map || kind == UnrealPropertyKind::Set)
+                {
+                    auto* property = parameter_properties[index];
+                    m_initialize_property_value(property, address);
+                    if (is_input && assign_typed_value(property, address, parameter.kind, parameter.value) != 0)
+                    {
+                        m_destroy_property_value(property, address);
+                        return -5;
+                    }
+                    struct_values.emplace_back(property, address);
                 }
                 else if (kind == UnrealPropertyKind::WeakObject)
                 {
@@ -3244,9 +3268,7 @@ namespace RogueMod
                     continue;
                 }
                 const auto kind = decode_kind(parameter.kind);
-                const auto size = kind == UnrealPropertyKind::Struct || kind == UnrealPropertyKind::Optional
-                    ? static_cast<std::size_t>(parameter.size)
-                    : expected_value_size(kind);
+                const auto size = expected_parameter_size(kind, parameter.size);
                 const auto* address = buffer_data + parameter.offset;
                 parameter.value = {parameter.kind, 0, 0};
                 if (kind == UnrealPropertyKind::Boolean)
@@ -3277,6 +3299,8 @@ namespace RogueMod
                         || kind == UnrealPropertyKind::Struct
                         || kind == UnrealPropertyKind::Array
                         || kind == UnrealPropertyKind::Optional
+                        || kind == UnrealPropertyKind::Map
+                        || kind == UnrealPropertyKind::Set
                         || kind == UnrealPropertyKind::LazyObject
                         || kind == UnrealPropertyKind::SoftObject)
                     {
@@ -3386,10 +3410,7 @@ namespace RogueMod
                 registration.properties.push_back(live_property);
                 auto& parameter = registration.parameters[index];
                 const auto kind = decode_kind(parameter.kind);
-                const auto size = (kind == UnrealPropertyKind::Struct || kind == UnrealPropertyKind::Optional)
-                        && parameter.size > 0
-                    ? static_cast<std::size_t>(parameter.size)
-                    : expected_value_size(kind);
+                const auto size = expected_parameter_size(kind, parameter.size);
                 const auto* live_offset = m_get_offset(live_property);
                 const auto* live_size = m_get_element_size(live_property);
                 if (size == 0 || parameter.array_dimension != 1 || parameter.offset < 0

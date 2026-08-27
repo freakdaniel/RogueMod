@@ -20,10 +20,11 @@ public sealed class DeadzoneLiveReflectionProbe : IRogueMod, IRogueModGameEvents
         MapSet = 1 << 9,
         MapSetWrite = 1 << 10,
         NonPodStruct = 1 << 11,
-        All = Optional | WeakReference | LazyReference | NameArray | ObjectPtr | ObjectCreation | ActorSpawn | SoftObject | Interface | MapSet | MapSetWrite | NonPodStruct
+        FunctionHooks = 1 << 12,
+        All = Optional | WeakReference | LazyReference | NameArray | ObjectPtr | ObjectCreation | ActorSpawn | SoftObject | Interface | MapSet | MapSetWrite | NonPodStruct | FunctionHooks
     }
 
-    private const LiveFeature EnabledFeatures = LiveFeature.MapSet | LiveFeature.MapSetWrite | LiveFeature.NonPodStruct;
+    private const LiveFeature EnabledFeatures = LiveFeature.FunctionHooks;
     private const int MaximumUpdateAttempts = 18_000;
     private const int GameplayObservationInterval = 60;
     private const string NameArrayMarker = "RogueModLiveProbe";
@@ -35,6 +36,24 @@ public sealed class DeadzoneLiveReflectionProbe : IRogueMod, IRogueModGameEvents
         ByteToInt,
         NameToInt,
         IntToString
+    }
+
+    private enum FunctionHookProbeStage
+    {
+        MapRegisterPre,
+        MapRegisterPost,
+        MapInvoke,
+        MapDispose,
+        SetRegisterPre,
+        SetRegisterPost,
+        SetInvoke,
+        SetDispose,
+        NonPodRegisterPre,
+        NonPodRegisterPost,
+        NonPodInvoke,
+        NonPodDispose,
+        Complete,
+        Failed
     }
 
     private readonly record struct ObservedObject(UnrealObjectHandle Handle, string Path);
@@ -168,6 +187,58 @@ public sealed class DeadzoneLiveReflectionProbe : IRogueMod, IRogueModGameEvents
         8,
         4,
         [new("TagName", "NameProperty", 0, 8)]);
+
+    private static readonly UnrealArrayDescriptor StringArrayDescriptor = new("StrProperty", 16);
+    private static readonly UnrealMapDescriptor StringMapDescriptor = new(
+        "StrProperty",
+        16,
+        "StrProperty",
+        16);
+    private static readonly UnrealSetDescriptor NameSetDescriptor = new("NameProperty", 8);
+
+    // Real typed functions for hook transport: the previous targets (BlueprintTypeConversions
+    // ConvertMapType/ConvertSetType) are CustomThunk functions whose wildcard resolution needs
+    // a VM frame, so a direct ProcessEvent with an artificial buffer crashes.
+    private static readonly UnrealFunctionDescriptor ParseCommandLineFunction = new(
+        "/Script/Engine.KismetSystemLibrary",
+        "/Script/Engine.KismetSystemLibrary:ParseCommandLine",
+        "ParseCommandLine",
+        "FUNC_Final | FUNC_RequiredAPI | FUNC_Native | FUNC_Static | FUNC_Public | FUNC_HasOutParms | FUNC_BlueprintCallable",
+        [
+            new("InCmdLine", "StrProperty", 0, 1, "CPF_Parm | CPF_ZeroConstructor | CPF_HasGetValueTypeHash | CPF_NativeAccessSpecifierPublic", 16),
+            new("OutTokens", "ArrayProperty", 16, 1, "CPF_Parm | CPF_OutParm | CPF_ZeroConstructor | CPF_NativeAccessSpecifierPublic", 16)
+            {
+                Array = StringArrayDescriptor
+            },
+            new("OutSwitches", "ArrayProperty", 32, 1, "CPF_Parm | CPF_OutParm | CPF_ZeroConstructor | CPF_NativeAccessSpecifierPublic", 16)
+            {
+                Array = StringArrayDescriptor
+            },
+            new("OutParams", "MapProperty", 48, 1, "CPF_Parm | CPF_OutParm | CPF_NativeAccessSpecifierPublic", 80)
+            {
+                Map = StringMapDescriptor
+            }
+        ]);
+    private static readonly UnrealFunctionDescriptor GetActiveDataLayerNamesFunction = new(
+        "/Script/Engine.DataLayerSubsystem",
+        "/Script/Engine.DataLayerSubsystem:GetActiveDataLayerNames",
+        "GetActiveDataLayerNames",
+        "FUNC_Final | FUNC_Native | FUNC_Public | FUNC_BlueprintCallable | FUNC_BlueprintPure | FUNC_Const",
+        [
+            new("ReturnValue", "SetProperty", 0, 1, "CPF_ConstParm | CPF_Parm | CPF_OutParm | CPF_ReturnParm | CPF_ReferenceParm | CPF_NativeAccessSpecifierPublic", 80)
+            {
+                Set = NameSetDescriptor
+            }
+        ]);
+    private static readonly UnrealFunctionDescriptor MakeLiteralGameplayTagFunction = new(
+        "/Script/GameplayTags.BlueprintGameplayTagLibrary",
+        "/Script/GameplayTags.BlueprintGameplayTagLibrary:MakeLiteralGameplayTag",
+        "MakeLiteralGameplayTag",
+        "FUNC_Final | FUNC_RequiredAPI | FUNC_Native | FUNC_Static | FUNC_Public | FUNC_BlueprintCallable | FUNC_BlueprintPure",
+        [
+            new("Value", "StructProperty:/Script/GameplayTags.GameplayTag", 0, 1, "CPF_Parm | CPF_NoDestructor | CPF_HasGetValueTypeHash | CPF_NativeAccessSpecifierPublic", 8, Struct: GameplayTagStruct),
+            new("ReturnValue", "StructProperty:/Script/GameplayTags.GameplayTag", 8, 1, "CPF_Parm | CPF_OutParm | CPF_ReturnParm | CPF_NoDestructor | CPF_HasGetValueTypeHash | CPF_NativeAccessSpecifierPublic", 8, Struct: GameplayTagStruct)
+        ]);
 
     private static readonly UnrealStructDescriptor WakeupSequenceDataStruct = new(
         "/Script/Valhalla.ValWakeupSequenceData",
@@ -367,6 +438,17 @@ public sealed class DeadzoneLiveReflectionProbe : IRogueMod, IRogueModGameEvents
     private bool mapSetWriteFailureLogged;
     private bool nonPodStructCompleted;
     private bool nonPodStructFailureLogged;
+    private bool functionHooksCompleted;
+    private bool functionHooksFailureLogged;
+    private FunctionHookProbeStage functionHookStage;
+    private UnrealObjectHandle functionHookMapInstance;
+    private UnrealObjectHandle functionHookSetInstance;
+    private UnrealObjectHandle functionHookGameplayTags;
+    private IDisposable? functionHookPre;
+    private IDisposable? functionHookPost;
+    private int functionHookPreCalls;
+    private int functionHookPostCalls;
+    private string? functionHookWaitReason;
     private bool shipReady;
     private bool shipReadyLogged;
     private string? gameplayPhaseSignature;
@@ -380,6 +462,7 @@ public sealed class DeadzoneLiveReflectionProbe : IRogueMod, IRogueModGameEvents
 
     public ValueTask UnloadAsync(CancellationToken cancellationToken = default)
     {
+        DisposeFunctionHookSubscriptions(suppressErrors: true);
         context = null;
         return ValueTask.CompletedTask;
     }
@@ -398,7 +481,8 @@ public sealed class DeadzoneLiveReflectionProbe : IRogueMod, IRogueModGameEvents
                 && IsComplete(LiveFeature.Interface, interfaceCompleted)
                 && IsComplete(LiveFeature.MapSet, mapSetCompleted)
                 && IsComplete(LiveFeature.MapSetWrite, mapSetWriteCompleted)
-                && IsComplete(LiveFeature.NonPodStruct, nonPodStructCompleted)))
+                && IsComplete(LiveFeature.NonPodStruct, nonPodStructCompleted)
+                && IsComplete(LiveFeature.FunctionHooks, functionHooksCompleted)))
         {
             return;
         }
@@ -466,6 +550,10 @@ public sealed class DeadzoneLiveReflectionProbe : IRogueMod, IRogueModGameEvents
             {
                 context.Logger.Log(ModLogLevel.Error, "LIVE-NONPOD-STRUCT FAIL: no non-POD struct write round-trip was verified");
             }
+            if (IsEnabled(LiveFeature.FunctionHooks) && !functionHooksCompleted)
+            {
+                context.Logger.Log(ModLogLevel.Error, "LIVE-FUNCTION-HOOKS FAIL: no container/non-POD hook round-trip was verified");
+            }
         }
     }
 
@@ -478,7 +566,7 @@ public sealed class DeadzoneLiveReflectionProbe : IRogueMod, IRogueModGameEvents
         // Object enumeration is inherently unstable while Unreal is creating and destroying
         // startup objects. Run at most one probe per callback so retries cannot cascade through
         // several FindAllOf calls and mutations in the same frame.
-        switch (updateAttempts % 11)
+        switch (updateAttempts % 12)
         {
             case 0: TryVerifyOptional(); break;
             case 1: TryVerifyWeakReference(); break;
@@ -491,6 +579,343 @@ public sealed class DeadzoneLiveReflectionProbe : IRogueMod, IRogueModGameEvents
             case 8: TryVerifyInterface(); break;
             case 9: TryVerifyMapSet(); break;
             case 10: TryVerifyNonPodStruct(); break;
+            case 11: TryVerifyFunctionHooks(); break;
+        }
+    }
+
+    private void TryVerifyFunctionHooks()
+    {
+        if (!IsEnabled(LiveFeature.FunctionHooks)
+            || functionHooksCompleted
+            || functionHookStage == FunctionHookProbeStage.Failed
+            || context is null
+            || !context.Unreal.IsAvailable
+            || (context.Unreal.Capabilities & (UnrealReflectionCapabilities.FunctionHooks
+                | UnrealReflectionCapabilities.FunctionInvocation
+                | UnrealReflectionCapabilities.MapSetProperties
+                | UnrealReflectionCapabilities.MapSetWrites))
+                != (UnrealReflectionCapabilities.FunctionHooks
+                    | UnrealReflectionCapabilities.FunctionInvocation
+                    | UnrealReflectionCapabilities.MapSetProperties
+                    | UnrealReflectionCapabilities.MapSetWrites))
+        {
+            return;
+        }
+
+        var unreal = context.Unreal;
+        var stage = (int)functionHookStage;
+        if (stage >= (int)FunctionHookProbeStage.MapRegisterPre
+            && stage <= (int)FunctionHookProbeStage.MapDispose)
+        {
+            if (functionHookMapInstance.IsNull)
+            {
+                functionHookMapInstance = unreal.FindFirstOf("/Script/Engine.Default__KismetSystemLibrary");
+            }
+            if (functionHookMapInstance.IsNull || !unreal.IsValid(functionHookMapInstance))
+            {
+                LogFunctionHookWait("KismetSystemLibrary CDO");
+                return;
+            }
+        }
+        else if (stage >= (int)FunctionHookProbeStage.SetRegisterPre
+                 && stage <= (int)FunctionHookProbeStage.SetDispose)
+        {
+            if (functionHookSetInstance.IsNull)
+            {
+                functionHookSetInstance = FindRuntimeObjects(unreal, "DataLayerSubsystem")
+                    .Select(static value => value.Handle)
+                    .FirstOrDefault();
+            }
+            if (functionHookSetInstance.IsNull || !unreal.IsValid(functionHookSetInstance))
+            {
+                LogFunctionHookWait("runtime DataLayerSubsystem");
+                return;
+            }
+        }
+        else if (stage >= (int)FunctionHookProbeStage.NonPodRegisterPre
+                 && stage <= (int)FunctionHookProbeStage.NonPodDispose)
+        {
+            if (functionHookGameplayTags.IsNull)
+            {
+                functionHookGameplayTags = unreal.FindFirstOf("/Script/GameplayTags.Default__BlueprintGameplayTagLibrary");
+            }
+            if (functionHookGameplayTags.IsNull || !unreal.IsValid(functionHookGameplayTags))
+            {
+                LogFunctionHookWait("BlueprintGameplayTagLibrary CDO");
+                return;
+            }
+        }
+        functionHookWaitReason = null;
+
+        try
+        {
+            var currentStage = functionHookStage;
+            context.Logger.Log(ModLogLevel.Information, $"LIVE-FUNCTION-HOOKS stage begin: {currentStage}");
+            AdvanceFunctionHookProbe(unreal);
+            context.Logger.Log(ModLogLevel.Information, $"LIVE-FUNCTION-HOOKS stage end: {currentStage}");
+        }
+        catch (Exception exception)
+        {
+            var failedStage = functionHookStage;
+            functionHookStage = FunctionHookProbeStage.Failed;
+            DisposeFunctionHookSubscriptions(suppressErrors: true);
+            if (!functionHooksFailureLogged)
+            {
+                context.Logger.Log(ModLogLevel.Error, $"LIVE-FUNCTION-HOOKS rejected at {failedStage}: {exception}");
+                functionHooksFailureLogged = true;
+            }
+        }
+    }
+
+    private void LogFunctionHookWait(string reason)
+    {
+        if (context is not null && !StringComparer.Ordinal.Equals(functionHookWaitReason, reason))
+        {
+            context.Logger.Log(ModLogLevel.Information, $"LIVE-FUNCTION-HOOKS waiting for {reason}");
+            functionHookWaitReason = reason;
+        }
+    }
+
+    private void AdvanceFunctionHookProbe(IUnrealReflection unreal)
+    {
+        switch (functionHookStage)
+        {
+            case FunctionHookProbeStage.MapRegisterPre:
+                functionHookPre = unreal.RegisterHook(
+                    ParseCommandLineFunction,
+                    UnrealHookPhase.Pre,
+                    new UnrealHookOptions(Priority: 20, Instance: functionHookMapInstance),
+                    hook =>
+                    {
+                        hook.SetArgument("InCmdLine", UnrealValue.From("-RogueModProbe=original"));
+                        functionHookPreCalls++;
+                    });
+                functionHookStage = FunctionHookProbeStage.MapRegisterPost;
+                break;
+            case FunctionHookProbeStage.MapRegisterPost:
+                functionHookPost = unreal.RegisterHook(
+                    ParseCommandLineFunction,
+                    UnrealHookPhase.Post,
+                    new UnrealHookOptions(Priority: 20, Instance: functionHookMapInstance),
+                    hook =>
+                    {
+                        _ = DecodeStringMap(hook.Result.OutArguments["OutParams"]);
+                        hook.SetOutArgument(
+                            "OutParams",
+                            EncodeStringMap(new Dictionary<string, string> { ["RogueModProbe"] = "replaced" }));
+                        functionHookPostCalls++;
+                    });
+                functionHookStage = FunctionHookProbeStage.MapInvoke;
+                break;
+            case FunctionHookProbeStage.MapInvoke:
+            {
+                var result = unreal.Invoke(
+                    functionHookMapInstance,
+                    ParseCommandLineFunction,
+                    [new UnrealArgument("InCmdLine", UnrealValue.From("ignored"))]);
+                RequireStringMap(
+                    DecodeStringMap(result.OutArguments["OutParams"]),
+                    "RogueModProbe",
+                    "replaced",
+                    "TMap hook replacement result");
+                RequireHookDispatchCounts("TMap");
+                functionHookStage = FunctionHookProbeStage.MapDispose;
+                break;
+            }
+            case FunctionHookProbeStage.MapDispose:
+                DisposeFunctionHookSubscriptions();
+                ResetFunctionHookDispatchCounts();
+                functionHookStage = FunctionHookProbeStage.SetRegisterPre;
+                break;
+            case FunctionHookProbeStage.SetRegisterPre:
+                // GetActiveDataLayerNames has no set input; the pre hook verifies the chain fires.
+                functionHookPre = unreal.RegisterHook(
+                    GetActiveDataLayerNamesFunction,
+                    UnrealHookPhase.Pre,
+                    new UnrealHookOptions(Priority: 20, Instance: functionHookSetInstance),
+                    hook => functionHookPreCalls++);
+                functionHookStage = FunctionHookProbeStage.SetRegisterPost;
+                break;
+            case FunctionHookProbeStage.SetRegisterPost:
+                functionHookPost = unreal.RegisterHook(
+                    GetActiveDataLayerNamesFunction,
+                    UnrealHookPhase.Post,
+                    new UnrealHookOptions(Priority: 20, Instance: functionHookSetInstance),
+                    hook =>
+                    {
+                        // Decoding the return verifies the set round-trips through the hook.
+                        _ = DecodeNameSet(hook.Result.ReturnValue);
+                        hook.SetReturnValue(EncodeNameSet(new HashSet<string> { "RogueModLiveProbe" }));
+                        functionHookPostCalls++;
+                    });
+                functionHookStage = FunctionHookProbeStage.SetInvoke;
+                break;
+            case FunctionHookProbeStage.SetInvoke:
+            {
+                var result = unreal.Invoke(
+                    functionHookSetInstance,
+                    GetActiveDataLayerNamesFunction,
+                    []);
+                RequireNameSet(DecodeNameSet(result.ReturnValue), "RogueModLiveProbe", "TSet hook replacement result");
+                RequireHookDispatchCounts("TSet");
+                functionHookStage = FunctionHookProbeStage.SetDispose;
+                break;
+            }
+            case FunctionHookProbeStage.SetDispose:
+                DisposeFunctionHookSubscriptions();
+                ResetFunctionHookDispatchCounts();
+                functionHookStage = FunctionHookProbeStage.NonPodRegisterPre;
+                break;
+            case FunctionHookProbeStage.NonPodRegisterPre:
+                functionHookPre = unreal.RegisterHook(
+                    MakeLiteralGameplayTagFunction,
+                    UnrealHookPhase.Pre,
+                    new UnrealHookOptions(Priority: 20, Instance: functionHookGameplayTags),
+                    hook =>
+                    {
+                        RequireGameplayTag(hook.Arguments["Value"], "None", "non-POD pre-hook input");
+                        hook.SetArgument("Value", EncodeGameplayTag("RogueModLiveProbe"));
+                        functionHookPreCalls++;
+                    });
+                functionHookStage = FunctionHookProbeStage.NonPodRegisterPost;
+                break;
+            case FunctionHookProbeStage.NonPodRegisterPost:
+                functionHookPost = unreal.RegisterHook(
+                    MakeLiteralGameplayTagFunction,
+                    UnrealHookPhase.Post,
+                    new UnrealHookOptions(Priority: 20, Instance: functionHookGameplayTags),
+                    hook =>
+                    {
+                        RequireGameplayTag(hook.Result.ReturnValue, "RogueModLiveProbe", "non-POD post-hook return");
+                        hook.SetReturnValue(EncodeGameplayTag("None"));
+                        functionHookPostCalls++;
+                    });
+                functionHookStage = FunctionHookProbeStage.NonPodInvoke;
+                break;
+            case FunctionHookProbeStage.NonPodInvoke:
+            {
+                var result = unreal.Invoke(
+                    functionHookGameplayTags,
+                    MakeLiteralGameplayTagFunction,
+                    [new UnrealArgument("Value", EncodeGameplayTag("None"))]);
+                RequireGameplayTag(result.ReturnValue, "None", "non-POD hook replacement result");
+                RequireHookDispatchCounts("non-POD");
+                functionHookStage = FunctionHookProbeStage.NonPodDispose;
+                break;
+            }
+            case FunctionHookProbeStage.NonPodDispose:
+                DisposeFunctionHookSubscriptions();
+                functionHookStage = FunctionHookProbeStage.Complete;
+                functionHooksCompleted = true;
+                context!.Logger.Log(
+                    ModLogLevel.Information,
+                    "LIVE-FUNCTION-HOOKS PASS: TMap pre/post=ok TSet pre/post=ok non-POD pre/post=ok instance-filter=ok cleanup=ok");
+                break;
+            case FunctionHookProbeStage.Complete:
+            case FunctionHookProbeStage.Failed:
+                break;
+            default:
+                throw new InvalidOperationException($"Unknown function-hook probe stage {functionHookStage}");
+        }
+    }
+
+    private void RequireHookDispatchCounts(string type)
+    {
+        if (functionHookPreCalls != 1 || functionHookPostCalls != 1)
+        {
+            throw new InvalidOperationException(
+                $"{type} hook dispatch count was pre={functionHookPreCalls}, post={functionHookPostCalls}");
+        }
+    }
+
+    private void ResetFunctionHookDispatchCounts()
+    {
+        functionHookPreCalls = 0;
+        functionHookPostCalls = 0;
+    }
+
+    private void DisposeFunctionHookSubscriptions(bool suppressErrors = false)
+    {
+        var post = functionHookPost;
+        functionHookPost = null;
+        var pre = functionHookPre;
+        functionHookPre = null;
+
+        Exception? failure = null;
+        try
+        {
+            post?.Dispose();
+        }
+        catch (Exception exception)
+        {
+            failure = exception;
+        }
+        try
+        {
+            pre?.Dispose();
+        }
+        catch (Exception exception)
+        {
+            failure ??= exception;
+        }
+        if (!suppressErrors && failure is not null)
+        {
+            throw failure;
+        }
+    }
+
+    private static UnrealValue EncodeStringMap(IReadOnlyDictionary<string, string> value) =>
+        UnrealMapValue.From(StringMapDescriptor, value, UnrealValue.From, UnrealValue.From);
+
+    private static IReadOnlyDictionary<string, string> DecodeStringMap(UnrealValue value) =>
+        UnrealMapValue.ToDictionary<string, string>(value, item => item.As<string>(), item => item.As<string>());
+
+    private static void RequireStringMap(
+        IReadOnlyDictionary<string, string> value,
+        string key,
+        string expected,
+        string stage)
+    {
+        if (value.Count != 1 || !value.TryGetValue(key, out var actual)
+            || !StringComparer.Ordinal.Equals(actual, expected))
+        {
+            throw new InvalidOperationException($"{stage} did not contain only {key}:{expected}");
+        }
+    }
+
+    private static UnrealValue EncodeNameSet(IReadOnlySet<string> value) =>
+        UnrealSetValue.From(NameSetDescriptor, value, UnrealValue.From);
+
+    private static IReadOnlySet<string> DecodeNameSet(UnrealValue value) =>
+        UnrealSetValue.ToSet<string>(value, item => item.As<string>());
+
+    private static void RequireNameSet(IReadOnlySet<string> value, string expected, string stage)
+    {
+        if (value.Count != 1 || !value.Contains(expected))
+        {
+            throw new InvalidOperationException($"{stage} was '[{string.Join(',', value)}]', expected '{{{expected}}}'");
+        }
+    }
+
+    private static UnrealValue EncodeGameplayTag(string tagName) =>
+        UnrealValue.From(new UnrealStructValue(
+            GameplayTagStruct,
+            new Dictionary<string, UnrealValue> { ["TagName"] = UnrealValue.From(tagName) }));
+
+    private static void RequireGameplayTag(UnrealValue value, string expected, string stage)
+    {
+        var actual = value.As<UnrealStructValue>().GetField("TagName").As<string>();
+        if (!StringComparer.Ordinal.Equals(actual, expected))
+        {
+            throw new InvalidOperationException($"{stage} was '{actual}', expected '{expected}'");
+        }
+    }
+
+    private static void RequireMap(IReadOnlyDictionary<int, int> value, int key, int expected, string stage)
+    {
+        if (value.Count != 1 || !value.TryGetValue(key, out var actual) || actual != expected)
+        {
+            throw new InvalidOperationException($"{stage} did not contain only {key}:{expected}");
         }
     }
 

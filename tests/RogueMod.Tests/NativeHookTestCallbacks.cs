@@ -114,7 +114,7 @@ internal static unsafe class NativeHookTestCallbacks
             {
                 return;
             }
-            if (kind == 17)
+            if (kind is 15 or 17 or 24)
             {
                 var elements = (NativeUnrealReflection.NativeUnrealValue*)value.Data;
                 for (var index = 0U; index < value.Reserved; index++)
@@ -122,11 +122,20 @@ internal static unsafe class NativeHookTestCallbacks
                     Release(elements[index]);
                 }
             }
+            else if (kind == 23)
+            {
+                var entries = (NativeUnrealReflection.NativeUnrealValue*)value.Data;
+                for (var index = 0U; index < value.Reserved; index++)
+                {
+                    Release(entries[index * 2]);
+                    Release(entries[index * 2 + 1]);
+                }
+            }
             else if (kind == 18 && value.Reserved == 1)
             {
                 Release(*(NativeUnrealReflection.NativeUnrealValue*)value.Data);
             }
-            else if (kind is not (13 or 14 or 15 or 16 or 20))
+            else if (kind is not (13 or 14 or 16 or 20))
             {
                 return;
             }
