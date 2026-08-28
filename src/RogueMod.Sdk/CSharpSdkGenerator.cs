@@ -234,7 +234,100 @@ public sealed class CSharpSdkGenerator
             builder.AppendLine();
         }
 
+        WriteGameHelpers(builder, normalizedNamespace);
+
         return builder.ToString();
+    }
+
+    private static void WriteGameHelpers(StringBuilder builder, string ns)
+    {
+        builder.AppendLine("// === High-level typed helpers for modders (items, weapons, features) ===");
+        builder.AppendLine("// These provide simple collections so you don't have to navigate raw SDK classes.");
+        builder.AppendLine();
+
+        builder.AppendLine("public static class DeadzoneRogueInventory");
+        builder.AppendLine("{");
+
+        // Items
+        builder.AppendLine("    /// <summary>All items from the player's arsenal (typed InventoryItem structs).</summary>");
+        builder.AppendLine("    public static global::System.Collections.Generic.IReadOnlyList<InventoryItem> GetAllItems(global::RogueMod.Abstractions.IUnrealReflection unreal)");
+        builder.AppendLine("    {");
+        builder.AppendLine("        var result = new global::System.Collections.Generic.List<InventoryItem>();");
+        builder.AppendLine("        foreach (var ars in ValArsenalItem.FindAll(unreal))");
+        builder.AppendLine("        {");
+        builder.AppendLine("            try { result.Add(ars.InventoryItem); } catch { }");
+        builder.AppendLine("        }");
+        builder.AppendLine("        return result;");
+        builder.AppendLine("    }");
+
+        // Weapons (combines equipped gun ability + item data where possible)
+        builder.AppendLine();
+        builder.AppendLine("    public readonly record struct EquippedWeapon(");
+        builder.AppendLine("        global::DeadzoneRogue.Sdk.GameplayTag Slot,");
+        builder.AppendLine("        global::DeadzoneRogue.Sdk.ValGameplayAbility? Ability,");
+        builder.AppendLine("        global::DeadzoneRogue.Sdk.InventoryItem? ItemData,");
+        builder.AppendLine("        double? BulletDamage,");
+        builder.AppendLine("        double? TimeBetweenShots);");
+
+        builder.AppendLine();
+        builder.AppendLine("    /// <summary>Current equipped weapons with direct access to damage/fire rate.</summary>");
+        builder.AppendLine("    public static global::System.Collections.Generic.IReadOnlyList<EquippedWeapon> GetEquippedWeapons(global::RogueMod.Abstractions.IUnrealReflection unreal)");
+        builder.AppendLine("    {");
+        builder.AppendLine("        var result = new global::System.Collections.Generic.List<EquippedWeapon>();");
+        builder.AppendLine("        try");
+        builder.AppendLine("        {");
+        builder.AppendLine("            foreach (var pc in ValPlayerController.FindAll(unreal))");
+        builder.AppendLine("            {");
+        builder.AppendLine("                if (!pc.IsLocalPlayerController()) continue;");
+        builder.AppendLine("                var slot = pc.GetActiveEquipSlotTag();");
+        builder.AppendLine("                var handle = pc.GetPrimaryEquippedAbility();");
+        builder.AppendLine("                // Find live gun instances (GA_Gun_* derive from GA_Gun_Master / _Instant)");
+        builder.AppendLine("                foreach (var gun in GA_Gun_Master.FindAll(unreal))");
+        builder.AppendLine("                {");
+        builder.AppendLine("                    if (gun is global::DeadzoneRogue.Sdk.GA_Gun_Master_Instant inst)");
+        builder.AppendLine("                    {");
+        builder.AppendLine("                        result.Add(new EquippedWeapon(slot, gun, null, inst.BulletDamage, gun.TimeBetweenShots));");
+        builder.AppendLine("                    }");
+        builder.AppendLine("                    else");
+        builder.AppendLine("                    {");
+        builder.AppendLine("                        result.Add(new EquippedWeapon(slot, gun, null, null, gun.TimeBetweenShots));");
+        builder.AppendLine("                    }");
+        builder.AppendLine("                }");
+        builder.AppendLine("            }");
+        builder.AppendLine("        }");
+        builder.AppendLine("        catch { }");
+        builder.AppendLine("        return result;");
+        builder.AppendLine("    }");
+
+        // Features / advanced item data (affixes, upgrades, stats from InventoryItem + modifiers)
+        builder.AppendLine();
+        builder.AppendLine("    public readonly record struct ItemFeature(string Name, object? Value, string Category);");
+
+        builder.AppendLine();
+        builder.AppendLine("    /// <summary>Flattened 'features' (upgrades, affixes, powers, modifiers) from all items.</summary>");
+        builder.AppendLine("    public static global::System.Collections.Generic.IReadOnlyList<ItemFeature> GetAllItemFeatures(global::RogueMod.Abstractions.IUnrealReflection unreal)");
+        builder.AppendLine("    {");
+        builder.AppendLine("        var result = new global::System.Collections.Generic.List<ItemFeature>();");
+        builder.AppendLine("        foreach (var item in GetAllItems(unreal))");
+        builder.AppendLine("        {");
+        builder.AppendLine("            result.Add(new ItemFeature(\"UpgradeLevel\", item.UpgradeLevel, \"Progression\"));");
+        builder.AppendLine("            result.Add(new ItemFeature(\"AffixRerollsRemaining\", item.AffixRerollsRemaining, \"Affix\"));");
+        builder.AppendLine("            result.Add(new ItemFeature(\"RarityUpgradesRemaining\", item.RarityUpgradesRemaining, \"Rarity\"));");
+        builder.AppendLine("            result.Add(new ItemFeature(\"OffensivePower\", item.OffensivePower, \"Stats\"));");
+        builder.AppendLine("            result.Add(new ItemFeature(\"DefensivePower\", item.DefensivePower, \"Stats\"));");
+        builder.AppendLine("            result.Add(new ItemFeature(\"Armor\", item.Armor, \"Stats\"));");
+        builder.AppendLine("            result.Add(new ItemFeature(\"Rarity\", item.Rarity, \"Rarity\"));");
+        builder.AppendLine("            result.Add(new ItemFeature(\"ItemSource\", item.ItemSource, \"Source\"));");
+        builder.AppendLine("            foreach (var mod in item.ItemModifiers)");
+        builder.AppendLine("            {");
+        builder.AppendLine("                result.Add(new ItemFeature(\"Modifier\", mod, \"Modifier\"));");
+        builder.AppendLine("            }");
+        builder.AppendLine("        }");
+        builder.AppendLine("        return result;");
+        builder.AppendLine("    }");
+
+        builder.AppendLine("}");
+        builder.AppendLine();
     }
 
     private static void WriteEnum(StringBuilder builder, UnrealSdkType type, string typeName)
@@ -270,10 +363,25 @@ public sealed class CSharpSdkGenerator
             var propertyType = ResolveType(property.Type, property.ArrayDimension, typeNames, supportedStructPaths);
             builder.Append("    public ").Append(propertyType.Name).Append(' ').Append(name).AppendLine(" { get; init; }");
         }
+
         if (supportedStructPaths.Contains(type.Path))
         {
             WriteStructAdapter(builder, type, typeName, typeNames, supportedStructPaths, allStructs);
         }
+
+        // For vector-like types (the main thing modders touch inside DamageData etc.)
+        // emit a clean, culture-invariant ToString so output always uses '.' as decimal.
+        bool isVectorLike = allFields.Any(p => p.Name == "X") && allFields.Any(p => p.Name == "Y") && allFields.Any(p => p.Name == "Z");
+        if (isVectorLike && allFields.Count <= 4)
+        {
+            builder.AppendLine();
+            builder.AppendLine("    public override string ToString()");
+            builder.AppendLine("    {");
+            builder.AppendLine("        var ci = global::System.Globalization.CultureInfo.InvariantCulture;");
+            builder.AppendLine("        return $\"(\" + X.ToString(ci) + \", \" + Y.ToString(ci) + \", \" + Z.ToString(ci) + \")\";");
+            builder.AppendLine("    }");
+        }
+
         builder.AppendLine("}");
     }
 

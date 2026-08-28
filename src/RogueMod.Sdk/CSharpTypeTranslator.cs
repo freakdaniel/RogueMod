@@ -345,14 +345,8 @@ internal static string? ValueDescriptorExpressionOrNull(CsType type, string desc
             }
         }
 
-        // For atomic wrappers (have super but 0 own reflected fields, like Vector_NetQuantize),
-        // keep them as empty (0 fields) to match what the native bridge returns.
-        // Do not inherit the base fields for transport.
-        if (type.SuperPath is not null && type.Properties.Count(p => !HasFlag(p.Flags, "CPF_Parm")) == 0)
-        {
-            result.Clear();
-        }
-
+        // Atomic wrappers (Vector_NetQuantize etc) now inherit fields from super via raw-bytes transport
+        // in the bridge so that X/Y/Z etc become available.
         return result;
     }
 

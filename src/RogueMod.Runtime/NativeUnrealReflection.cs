@@ -1667,6 +1667,46 @@ internal sealed unsafe class NativeUnrealReflection(
                 $"Unreal struct '{structValue.Descriptor.Path}' cannot be written as '{descriptor.Path}'.");
         }
         var fields = descriptor.Fields;
+        if (fields.Count == 0)
+        {
+            return new NativeUnrealValue { Kind = encodedKind, Reserved = 0, Data = 0 };
+        }
+
+        bool canPackRaw = fields.All(f =>
+            f.Array == null && f.Optional == null && f.Map == null && f.Set == null && f.Struct == null);
+
+        if (canPackRaw)
+        {
+            byte[] raw = new byte[descriptor.Size];
+            for (var index = 0; index < fields.Count; index++)
+            {
+                var field = fields[index];
+                if (!structValue.Fields.TryGetValue(field.Name, out var fieldValue))
+                {
+                    throw new InvalidOperationException($"Unreal struct '{descriptor.Path}' is missing field '{field.Name}'.");
+                }
+                var fieldKind = GetPropertyKind(field.UnrealType, field.Size);
+                var encodedFieldKind = EncodePropertyKind(fieldKind, field.Array, field.Optional, field.Map, field.Set);
+                var nativeField = ToNativeValue(
+                    fieldKind,
+                    encodedFieldKind,
+                    fieldValue,
+                    field.Struct,
+                    field.Array,
+                    field.Optional,
+                    field.Map,
+                    field.Set,
+                    allocations);
+                int fsz = Math.Min(field.Size, 8);
+                for (int b = 0; b < fsz; b++)
+                {
+                    raw[field.Offset + b] = (byte)((nativeField.Data >> (8 * b)) & 0xFF);
+                }
+            }
+            var ptr = allocations.AddBytes(raw);
+            return new NativeUnrealValue { Kind = encodedKind, Reserved = 0, Data = unchecked((ulong)ptr) };
+        }
+
         var values = allocations.AddValues(fields.Count);
         for (var index = 0; index < fields.Count; index++)
         {
@@ -1698,6 +1738,12 @@ internal sealed unsafe class NativeUnrealReflection(
     private static UnrealStructValue ReadNativeStruct(NativeUnrealValue value, UnrealStructDescriptor descriptor)
     {
         var fields = descriptor.Fields;
+        if (value.Reserved == 0 && value.Data != 0)
+        {
+            // Raw bytes provided (for 0-reflected-property structs like Vector_NetQuantize* or packed POD).
+            // Synthesize fields from declared descriptor using the bytes + offsets.
+            return ReadStructValueFromRawBytes(value, descriptor);
+        }
         if (value.Reserved != fields.Count || (value.Data == 0 && value.Reserved != 0))
         {
             throw new InvalidOperationException(
@@ -1726,6 +1772,78 @@ internal sealed unsafe class NativeUnrealReflection(
                     field.Map,
                     field.Set));
         }
+        return new UnrealStructValue(descriptor, fieldValues);
+    }
+
+    private static UnrealStructValue ReadStructValueFromRawBytes(NativeUnrealValue container, UnrealStructDescriptor descriptor)
+    {
+        int size = descriptor.Size;
+        if (container.Data == 0 || size <= 0)
+        {
+            return new UnrealStructValue(descriptor, new Dictionary<string, UnrealValue>(StringComparer.Ordinal));
+        }
+
+        byte[] bytes = new byte[size];
+        Marshal.Copy(unchecked((IntPtr)container.Data), bytes, 0, size);
+
+        var fieldValues = new Dictionary<string, UnrealValue>(StringComparer.Ordinal);
+        foreach (var field in descriptor.Fields)
+        {
+            if (field.Offset < 0 || field.Offset + field.Size > size)
+            {
+                continue;
+            }
+
+            var kind = GetPropertyKind(field.UnrealType, field.Size);
+            var encoded = EncodePropertyKind(kind, field.Array, field.Optional, field.Map, field.Set);
+
+            NativeUnrealValue sub = default;
+            sub.Kind = encoded;
+
+            int fsz = field.Size;
+            bool isScalar = field.Array == null && field.Optional == null && field.Map == null && field.Set == null && field.Struct == null;
+
+            if (isScalar && fsz > 0 && fsz <= 8)
+            {
+                sub.Data = 0;
+                for (int b = 0; b < fsz; b++)
+                {
+                    sub.Data |= ((ulong)bytes[field.Offset + b]) << (8 * b);
+                }
+                fieldValues[field.Name] = ToManagedValue(
+                    kind,
+                    sub,
+                    field.Struct,
+                    field.Array,
+                    field.Optional,
+                    field.Map,
+                    field.Set);
+            }
+            else if (field.Struct != null)
+            {
+                // nested raw struct: copy subslice and recurse
+                byte[] subBytes = new byte[fsz];
+                Array.Copy(bytes, field.Offset, subBytes, 0, fsz);
+                var subPtr = Marshal.AllocCoTaskMem(fsz);
+                Marshal.Copy(subBytes, 0, subPtr, fsz);
+                try
+                {
+                    NativeUnrealValue subCont = new NativeUnrealValue { Kind = encoded, Reserved = 0, Data = (ulong)subPtr };
+                    var nested = ReadNativeStruct(subCont, field.Struct);
+                    fieldValues[field.Name] = new UnrealValue(nested);
+                }
+                finally
+                {
+                    Marshal.FreeCoTaskMem(subPtr);
+                }
+            }
+            else
+            {
+                // containers or other inside raw struct not supported in this path yet
+                fieldValues[field.Name] = new UnrealValue(null);
+            }
+        }
+
         return new UnrealStructValue(descriptor, fieldValues);
     }
 

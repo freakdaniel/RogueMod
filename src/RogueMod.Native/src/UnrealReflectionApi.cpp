@@ -145,10 +145,13 @@ namespace RogueMod
             {
                 if (value.reserved <= maximum_marshaled_array_length)
                 {
-                    auto* elements = reinterpret_cast<UnrealValue*>(value.data);
-                    for (std::uint32_t index = 0; index < value.reserved; ++index)
+                    if (value.reserved > 0)
                     {
-                        free_marshaled_value(elements[index]);
+                        auto* elements = reinterpret_cast<UnrealValue*>(value.data);
+                        for (std::uint32_t index = 0; index < value.reserved; ++index)
+                        {
+                            free_marshaled_value(elements[index]);
+                        }
                     }
                 }
                 CoTaskMemFree(reinterpret_cast<void*>(value.data));
@@ -1902,12 +1905,27 @@ namespace RogueMod
         }
 
         value.kind = encoded_kind;
-        value.reserved = static_cast<std::uint32_t>(fields.size());
         if (fields.empty())
         {
-            value.data = 0;
+            value.reserved = 0;
+            const auto* elem_sz = m_get_element_size(property);
+            std::size_t struct_size = (elem_sz && *elem_sz > 0) ? static_cast<std::size_t>(*elem_sz) : 0U;
+            if (struct_size == 0 || struct_size > maximum_marshaled_struct_size)
+            {
+                value.data = 0;
+                return true;
+            }
+            auto* copy = CoTaskMemAlloc(struct_size);
+            if (copy == nullptr)
+            {
+                value.data = 0;
+                return false;
+            }
+            std::memcpy(copy, address, struct_size);
+            value.data = reinterpret_cast<std::uint64_t>(copy);
             return true;
         }
+        value.reserved = static_cast<std::uint32_t>(fields.size());
 
         const auto wire_size = fields.size() * sizeof(UnrealValue);
         auto* wire = static_cast<UnrealValue*>(CoTaskMemAlloc(wire_size));
@@ -1976,7 +1994,10 @@ namespace RogueMod
         }
         if (fields.size() != value.reserved || fields.size() > maximum_marshaled_array_length)
         {
-            return -4;
+            if (!(fields.size() == 0 && value.reserved == 0))
+            {
+                return -4;
+            }
         }
         const auto* wire = reinterpret_cast<const UnrealValue*>(value.data);
         if (value.reserved != 0 && wire == nullptr)
@@ -1984,9 +2005,25 @@ namespace RogueMod
             return -4;
         }
 
+        bool committed = false;
+
+        if (fields.empty())
+        {
+            if (value.reserved == 0 && value.data != 0)
+            {
+                const auto* szp = m_get_element_size(property);
+                auto sz = szp ? static_cast<std::size_t>(*szp) : 0U;
+                if (sz > 0 && sz <= maximum_marshaled_struct_size)
+                {
+                    std::memcpy(address, reinterpret_cast<const void*>(value.data), sz);
+                }
+                committed = true;
+                return 0;
+            }
+        }
+
         m_destroy_property_value(property, address);
         m_initialize_property_value(property, address);
-        bool committed = false;
         ScopeExit struct_cleanup([&]()
         {
             if (!committed)
