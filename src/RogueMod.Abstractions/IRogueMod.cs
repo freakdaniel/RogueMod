@@ -256,7 +256,8 @@ public sealed record UnrealStructDescriptor(
     string Path,
     int Size,
     int Alignment,
-    IReadOnlyList<UnrealStructFieldDescriptor> Fields);
+    IReadOnlyList<UnrealStructFieldDescriptor> Fields,
+    bool RawLayout = false);
 
 /// <summary>Layout and nested-type metadata for one field in a transportable Unreal struct.</summary>
 public sealed record UnrealStructFieldDescriptor(

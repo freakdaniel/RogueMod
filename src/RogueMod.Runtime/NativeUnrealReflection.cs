@@ -1672,10 +1672,7 @@ internal sealed unsafe class NativeUnrealReflection(
             return new NativeUnrealValue { Kind = encodedKind, Reserved = 0, Data = 0 };
         }
 
-        bool canPackRaw = fields.All(f =>
-            f.Array == null && f.Optional == null && f.Map == null && f.Set == null && f.Struct == null);
-
-        if (canPackRaw)
+        if (descriptor.RawLayout)
         {
             byte[] raw = new byte[descriptor.Size];
             for (var index = 0; index < fields.Count; index++)
@@ -1738,7 +1735,7 @@ internal sealed unsafe class NativeUnrealReflection(
     private static UnrealStructValue ReadNativeStruct(NativeUnrealValue value, UnrealStructDescriptor descriptor)
     {
         var fields = descriptor.Fields;
-        if (value.Reserved == 0 && value.Data != 0)
+        if (descriptor.RawLayout && value.Reserved == 0 && value.Data != 0)
         {
             // Raw bytes provided (for 0-reflected-property structs like Vector_NetQuantize* or packed POD).
             // Synthesize fields from declared descriptor using the bytes + offsets.

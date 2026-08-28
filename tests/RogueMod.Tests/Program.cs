@@ -1181,6 +1181,8 @@ public sealed class RogueModTests
               "children": ["/Game/Test.BP_Player_C:SetHealth", "/Game/Test.BP_Player_C:GetHealth", "/Game/Test.BP_Player_C:SetPlayerName", "/Game/Test.BP_Player_C:SetLocation", "/Game/Test.BP_Player_C:GetLocation", "/Game/Test.BP_Player_C:EchoText", "/Game/Test.BP_Player_C:EchoNumbers", "/Game/Test.BP_Player_C:EchoNumberGroups", "/Game/Test.BP_Player_C:EchoOptional", "/Game/Test.BP_Player_C:EchoWeak", "/Game/Test.BP_Player_C:EchoLazy", "/Game/Test.BP_Player_C:EchoSoft", "/Game/Test.BP_Player_C:EchoScoresByName", "/Game/Test.BP_Player_C:EchoUniqueScores", "/Game/Test.BP_Player_C:EchoLoadout"],
               "properties": [
                 { "name": "Health", "type": "FloatProperty", "offset": 256, "array_dim": 1, "size": 4, "flags": "CPF_Edit | CPF_BlueprintVisible" },
+                { "name": "ReadOnlyTuning", "type": "FloatProperty", "offset": 260, "array_dim": 1, "size": 4, "flags": "CPF_BlueprintVisible | CPF_BlueprintReadOnly" },
+                { "name": "EditConstSetting", "type": "FloatProperty", "offset": 252, "array_dim": 1, "size": 4, "flags": "CPF_BlueprintVisible | CPF_BlueprintReadOnly | CPF_EditConst" },
                 { "name": "Target", "type": "ObjectProperty", "property_class": "/Script/Engine.Actor", "offset": 264, "array_dim": 1, "size": 8, "flags": "CPF_BlueprintVisible" },
                 { "name": "PlayerName", "type": "StrProperty", "offset": 272, "array_dim": 1, "size": 16, "flags": "CPF_BlueprintVisible" },
                 { "name": "Mode", "type": "NameProperty", "offset": 288, "array_dim": 1, "size": 8, "flags": "CPF_BlueprintVisible" },
@@ -1341,6 +1343,10 @@ public sealed class RogueModTests
             "Generated typed default-object lookup is missing.");
         Assert(source.Contains("public new static IReadOnlyList<BP_Player> FindAll", StringComparison.Ordinal), "Generated typed FindAll wrapper is missing.");
         Assert(source.Contains("public float Health", StringComparison.Ordinal), "Generated typed property is missing.");
+        Assert(source.Contains("get => Read<float>(__ReadOnlyTuning);\n        set => Write(__ReadOnlyTuning, value);", StringComparison.Ordinal),
+            "Blueprint-read-only metadata incorrectly removed the native C# property setter.");
+        Assert(!source.Contains("set => Write(__EditConstSetting, value);", StringComparison.Ordinal),
+            "Edit-const property unexpectedly received a C# property setter.");
         Assert(source.Contains("public Actor? Target", StringComparison.Ordinal), "Generated object wrapper property is missing.");
         Assert(source.Contains("public string PlayerName", StringComparison.Ordinal), "Generated FString property is missing.");
         Assert(source.Contains("public string Mode", StringComparison.Ordinal), "Generated FName property is missing.");

@@ -49,6 +49,13 @@ public sealed class CSharpSdkGenerator
         var sourcePath = Path.Combine(output, "RogueMod.GameSdk.g.cs");
         File.WriteAllText(sourcePath, source, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
 
+        // Generated SDKs must not inherit unrelated Directory.Build.props files from a
+        // parent temp/workspace directory. The project contains all required settings.
+        File.WriteAllText(
+            Path.Combine(output, "Directory.Build.props"),
+            "<Project />" + Environment.NewLine,
+            new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+
         var manifestPath = Path.Combine(output, "RogueMod.GameSdk.json");
         var manifest = new
         {
@@ -234,100 +241,160 @@ public sealed class CSharpSdkGenerator
             builder.AppendLine();
         }
 
-        WriteGameHelpers(builder, normalizedNamespace);
+        WriteGameHelpers(builder, model.Types);
 
         return builder.ToString();
     }
 
-    private static void WriteGameHelpers(StringBuilder builder, string ns)
+    private static void WriteGameHelpers(StringBuilder builder, IReadOnlyList<UnrealSdkType> types)
     {
-        builder.AppendLine("// === High-level typed helpers for modders (items, weapons, features) ===");
-        builder.AppendLine("// These provide simple collections so you don't have to navigate raw SDK classes.");
-        builder.AppendLine();
+        const string masterPath = "/Game/Abilities/Devices/Gun/GA_Gun_Master.GA_Gun_Master_C";
+        const string instantPath = "/Game/Abilities/Devices/Gun/GA_Gun_Master_Instant.GA_Gun_Master_Instant_C";
+        string[] requiredPaths =
+        [
+            "/Script/Valhalla.ValCharacter",
+            "/Script/Valhalla.ValAbilityFunctionLibrary",
+            masterPath,
+            instantPath,
+        ];
+        var typesByPath = types.ToDictionary(type => type.Path, StringComparer.Ordinal);
+        if (requiredPaths.Any(path => !typesByPath.ContainsKey(path)))
+        {
+            return;
+        }
+        var masterClasses = types
+            .Where(type => type.Kind == UnrealSdkTypeKind.Class && IsDerivedFrom(type, masterPath, typesByPath))
+            .Select(type => type.Path)
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+        var instantClasses = types
+            .Where(type => type.Kind == UnrealSdkTypeKind.Class && IsDerivedFrom(type, instantPath, typesByPath))
+            .Select(type => type.Path)
+            .Order(StringComparer.Ordinal)
+            .ToArray();
 
-        builder.AppendLine("public static class DeadzoneRogueInventory");
+        builder.AppendLine("/// <summary>Deadzone: Rogue helpers that resolve equipment owned by one live character.</summary>");
+        builder.AppendLine("public static class DeadzoneRogueEquipment");
         builder.AppendLine("{");
-
-        // Items
-        builder.AppendLine("    /// <summary>All items from the player's arsenal (typed InventoryItem structs).</summary>");
-        builder.AppendLine("    public static global::System.Collections.Generic.IReadOnlyList<InventoryItem> GetAllItems(global::RogueMod.Abstractions.IUnrealReflection unreal)");
+        WritePathSet(builder, "GunMasterClasses", masterClasses);
+        WritePathSet(builder, "InstantGunClasses", instantClasses);
+        builder.AppendLine();
+        builder.AppendLine("    public readonly record struct EquippedGun(");
+        builder.AppendLine("        GameplayTag Slot,");
+        builder.AppendLine("        GA_Gun_Master Master,");
+        builder.AppendLine("        GA_Gun_Master_Instant Instant);");
+        builder.AppendLine();
+        builder.AppendLine("    public readonly record struct ActiveGunResolution(");
+        builder.AppendLine("        EquippedGun? Gun,");
+        builder.AppendLine("        string Status,");
+        builder.AppendLine("        string? AbilityClassPath);");
+        builder.AppendLine();
+        builder.AppendLine("    /// <summary>Resolves the character's active live gun ability and its linked instant-fire ability.</summary>");
+        builder.AppendLine("    public static EquippedGun? GetActiveGun(");
+        builder.AppendLine("        global::RogueMod.Abstractions.IUnrealReflection unreal,");
+        builder.AppendLine("        ValCharacter character)");
+        builder.AppendLine("        => ResolveActiveGun(unreal, character).Gun;");
+        builder.AppendLine();
+        builder.AppendLine("    /// <summary>Resolves the active gun and reports the exact stage when it is not ready.</summary>");
+        builder.AppendLine("    public static ActiveGunResolution ResolveActiveGun(");
+        builder.AppendLine("        global::RogueMod.Abstractions.IUnrealReflection unreal,");
+        builder.AppendLine("        ValCharacter character)");
         builder.AppendLine("    {");
-        builder.AppendLine("        var result = new global::System.Collections.Generic.List<InventoryItem>();");
-        builder.AppendLine("        foreach (var ars in ValArsenalItem.FindAll(unreal))");
+        builder.AppendLine("        global::System.ArgumentNullException.ThrowIfNull(unreal);");
+        builder.AppendLine("        global::System.ArgumentNullException.ThrowIfNull(character);");
+        builder.AppendLine("        if (!character.IsValid || character.AbilitySystemComponent is not { IsValid: true } abilitySystem)");
         builder.AppendLine("        {");
-        builder.AppendLine("            try { result.Add(ars.InventoryItem); } catch { }");
+        builder.AppendLine("            return new(null, \"ability-system-unavailable\", null);");
         builder.AppendLine("        }");
-        builder.AppendLine("        return result;");
-        builder.AppendLine("    }");
-
-        // Weapons (combines equipped gun ability + item data where possible)
         builder.AppendLine();
-        builder.AppendLine("    public readonly record struct EquippedWeapon(");
-        builder.AppendLine("        global::DeadzoneRogue.Sdk.GameplayTag Slot,");
-        builder.AppendLine("        global::DeadzoneRogue.Sdk.ValGameplayAbility? Ability,");
-        builder.AppendLine("        global::DeadzoneRogue.Sdk.InventoryItem? ItemData,");
-        builder.AppendLine("        double? BulletDamage,");
-        builder.AppendLine("        double? TimeBetweenShots);");
-
-        builder.AppendLine();
-        builder.AppendLine("    /// <summary>Current equipped weapons with direct access to damage/fire rate.</summary>");
-        builder.AppendLine("    public static global::System.Collections.Generic.IReadOnlyList<EquippedWeapon> GetEquippedWeapons(global::RogueMod.Abstractions.IUnrealReflection unreal)");
-        builder.AppendLine("    {");
-        builder.AppendLine("        var result = new global::System.Collections.Generic.List<EquippedWeapon>();");
-        builder.AppendLine("        try");
+        builder.AppendLine("        var library = ValAbilityFunctionLibrary.FindDefaultObject(unreal);");
+        builder.AppendLine("        if (library is null)");
         builder.AppendLine("        {");
-        builder.AppendLine("            foreach (var pc in ValPlayerController.FindAll(unreal))");
+        builder.AppendLine("            return new(null, \"ability-library-unavailable\", null);");
+        builder.AppendLine("        }");
+        builder.AppendLine();
+        builder.AppendLine("        var handle = character.GetActiveEquippedAbility();");
+        builder.AppendLine("        var ability = library.GetPrimaryAbilityInstanceFromHandle(abilitySystem, handle);");
+        builder.AppendLine("        if (ability is not { IsValid: true })");
+        builder.AppendLine("        {");
+        builder.AppendLine("            return new(null, \"active-ability-unavailable\", null);");
+        builder.AppendLine("        }");
+        builder.AppendLine();
+        builder.AppendLine("        var abilityClassPath = unreal.GetPathName(unreal.GetClass(ability.Handle));");
+        builder.AppendLine("        GA_Gun_Master master;");
+        builder.AppendLine("        GA_Gun_Master_Instant instant;");
+        builder.AppendLine("        if (abilityClassPath is not null && GunMasterClasses.Contains(abilityClassPath))");
+        builder.AppendLine("        {");
+        builder.AppendLine("            master = new GA_Gun_Master(unreal, ability.Handle);");
+        builder.AppendLine("            if (master.InstantAbility is not { IsValid: true } linkedInstant)");
         builder.AppendLine("            {");
-        builder.AppendLine("                if (!pc.IsLocalPlayerController()) continue;");
-        builder.AppendLine("                var slot = pc.GetActiveEquipSlotTag();");
-        builder.AppendLine("                var handle = pc.GetPrimaryEquippedAbility();");
-        builder.AppendLine("                // Find live gun instances (GA_Gun_* derive from GA_Gun_Master / _Instant)");
-        builder.AppendLine("                foreach (var gun in GA_Gun_Master.FindAll(unreal))");
-        builder.AppendLine("                {");
-        builder.AppendLine("                    if (gun is global::DeadzoneRogue.Sdk.GA_Gun_Master_Instant inst)");
-        builder.AppendLine("                    {");
-        builder.AppendLine("                        result.Add(new EquippedWeapon(slot, gun, null, inst.BulletDamage, gun.TimeBetweenShots));");
-        builder.AppendLine("                    }");
-        builder.AppendLine("                    else");
-        builder.AppendLine("                    {");
-        builder.AppendLine("                        result.Add(new EquippedWeapon(slot, gun, null, null, gun.TimeBetweenShots));");
-        builder.AppendLine("                    }");
-        builder.AppendLine("                }");
+        builder.AppendLine("                return new(null, \"instant-ability-unavailable\", abilityClassPath);");
         builder.AppendLine("            }");
+        builder.AppendLine("            instant = linkedInstant;");
         builder.AppendLine("        }");
-        builder.AppendLine("        catch { }");
-        builder.AppendLine("        return result;");
-        builder.AppendLine("    }");
-
-        // Features / advanced item data (affixes, upgrades, stats from InventoryItem + modifiers)
-        builder.AppendLine();
-        builder.AppendLine("    public readonly record struct ItemFeature(string Name, object? Value, string Category);");
-
-        builder.AppendLine();
-        builder.AppendLine("    /// <summary>Flattened 'features' (upgrades, affixes, powers, modifiers) from all items.</summary>");
-        builder.AppendLine("    public static global::System.Collections.Generic.IReadOnlyList<ItemFeature> GetAllItemFeatures(global::RogueMod.Abstractions.IUnrealReflection unreal)");
-        builder.AppendLine("    {");
-        builder.AppendLine("        var result = new global::System.Collections.Generic.List<ItemFeature>();");
-        builder.AppendLine("        foreach (var item in GetAllItems(unreal))");
+        builder.AppendLine("        else if (abilityClassPath is not null && InstantGunClasses.Contains(abilityClassPath))");
         builder.AppendLine("        {");
-        builder.AppendLine("            result.Add(new ItemFeature(\"UpgradeLevel\", item.UpgradeLevel, \"Progression\"));");
-        builder.AppendLine("            result.Add(new ItemFeature(\"AffixRerollsRemaining\", item.AffixRerollsRemaining, \"Affix\"));");
-        builder.AppendLine("            result.Add(new ItemFeature(\"RarityUpgradesRemaining\", item.RarityUpgradesRemaining, \"Rarity\"));");
-        builder.AppendLine("            result.Add(new ItemFeature(\"OffensivePower\", item.OffensivePower, \"Stats\"));");
-        builder.AppendLine("            result.Add(new ItemFeature(\"DefensivePower\", item.DefensivePower, \"Stats\"));");
-        builder.AppendLine("            result.Add(new ItemFeature(\"Armor\", item.Armor, \"Stats\"));");
-        builder.AppendLine("            result.Add(new ItemFeature(\"Rarity\", item.Rarity, \"Rarity\"));");
-        builder.AppendLine("            result.Add(new ItemFeature(\"ItemSource\", item.ItemSource, \"Source\"));");
-        builder.AppendLine("            foreach (var mod in item.ItemModifiers)");
+        builder.AppendLine("            instant = new GA_Gun_Master_Instant(unreal, ability.Handle);");
+        builder.AppendLine("            if (instant.GA_Gun is not { IsValid: true } linkedMaster)");
         builder.AppendLine("            {");
-        builder.AppendLine("                result.Add(new ItemFeature(\"Modifier\", mod, \"Modifier\"));");
+        builder.AppendLine("                return new(null, \"master-ability-unavailable\", abilityClassPath);");
         builder.AppendLine("            }");
+        builder.AppendLine("            master = linkedMaster;");
         builder.AppendLine("        }");
-        builder.AppendLine("        return result;");
+        builder.AppendLine("        else");
+        builder.AppendLine("        {");
+        builder.AppendLine("            return new(null, \"active-ability-is-not-a-gun\", abilityClassPath);");
+        builder.AppendLine("        }");
+        builder.AppendLine();
+        builder.AppendLine("        var source = master.SourceCharacter;");
+        builder.AppendLine("        if (source is not null && source.Handle != character.Handle)");
+        builder.AppendLine("        {");
+        builder.AppendLine("            return new(null, \"gun-owned-by-another-character\", abilityClassPath);");
+        builder.AppendLine("        }");
+        builder.AppendLine();
+        builder.AppendLine("        if (master.InstantAbility?.Handle != instant.Handle || instant.GA_Gun?.Handle != master.Handle)");
+        builder.AppendLine("        {");
+        builder.AppendLine("            return new(null, \"gun-link-mismatch\", abilityClassPath);");
+        builder.AppendLine("        }");
+        builder.AppendLine();
+        builder.AppendLine("        var gun = new EquippedGun(character.GetActiveEquipSlotTag(), master, instant);");
+        builder.AppendLine("        return new(gun, \"ok\", abilityClassPath);");
         builder.AppendLine("    }");
-
         builder.AppendLine("}");
         builder.AppendLine();
+    }
+
+    private static bool IsDerivedFrom(
+        UnrealSdkType type,
+        string basePath,
+        IReadOnlyDictionary<string, UnrealSdkType> typesByPath)
+    {
+        var visited = new HashSet<string>(StringComparer.Ordinal);
+        for (var current = type; visited.Add(current.Path);)
+        {
+            if (StringComparer.Ordinal.Equals(current.Path, basePath))
+            {
+                return true;
+            }
+            if (current.SuperPath is null || !typesByPath.TryGetValue(current.SuperPath, out current))
+            {
+                return false;
+            }
+        }
+        return false;
+    }
+
+    private static void WritePathSet(StringBuilder builder, string name, IReadOnlyList<string> paths)
+    {
+        builder.Append("    private static readonly global::System.Collections.Generic.HashSet<string> ")
+            .Append(name)
+            .AppendLine(" = new(global::System.StringComparer.Ordinal)");
+        builder.AppendLine("    {");
+        foreach (var path in paths)
+        {
+            builder.Append("        ").Append(Literal(path)).AppendLine(",");
+        }
+        builder.AppendLine("    };");
     }
 
     private static void WriteEnum(StringBuilder builder, UnrealSdkType type, string typeName)
@@ -377,8 +444,7 @@ public sealed class CSharpSdkGenerator
             builder.AppendLine();
             builder.AppendLine("    public override string ToString()");
             builder.AppendLine("    {");
-            builder.AppendLine("        var ci = global::System.Globalization.CultureInfo.InvariantCulture;");
-            builder.AppendLine("        return $\"(\" + X.ToString(ci) + \", \" + Y.ToString(ci) + \", \" + Z.ToString(ci) + \")\";");
+            builder.AppendLine("        return global::System.FormattableString.Invariant($\"({X}, {Y}, {Z})\");");
             builder.AppendLine("    }");
         }
 
@@ -895,7 +961,17 @@ public sealed class CSharpSdkGenerator
             AppendValueDescriptors(builder, field.Type, typeNames, supportedStructPaths);
             builder.AppendLine("),");
         }
-        builder.AppendLine("    ]);");
+        var rawLayout = type.Properties.Count == 0
+            && type.SuperPath is not null
+            && fields.Length > 0
+            && HasFlag(type.Flags, "STRUCT_IsPlainOldData")
+            && HasFlag(type.Flags, "STRUCT_NoDestructor");
+        builder.Append("    ]");
+        if (rawLayout)
+        {
+            builder.Append(", RawLayout: true");
+        }
+        builder.AppendLine(");");
 
         builder.AppendLine();
         builder.AppendLine("    public UnrealValue ToUnrealValue() => UnrealValue.From(new UnrealStructValue(");
@@ -1040,8 +1116,7 @@ public sealed class CSharpSdkGenerator
         flags.Split('|', StringSplitOptions.TrimEntries).Contains(flag, StringComparer.Ordinal);
 
     private static bool CanWrite(string flags) =>
-        !HasFlag(flags, "CPF_BlueprintReadOnly")
-        && !HasFlag(flags, "CPF_EditConst")
+        !HasFlag(flags, "CPF_EditConst")
         && !HasFlag(flags, "CPF_ConstParm");
 
     private static string DescribeType(UnrealSdkTypeReference type) => CSharpTypeTranslator.Describe(type);
