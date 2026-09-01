@@ -1,0 +1,17 @@
+{
+  "$schema": "http://json.schemastore.org/template",
+  "author": "RogueMod contributors",
+  "classifications": ["RogueMod", "Deadzone Rogue", "Mod", "C++"],
+  "identity": "RogueMod.Templates.NativeMod",
+  "name": "RogueMod native mod",
+  "shortName": "roguemod-native",
+  "sourceName": "RogueMod.NativeMod",
+  "defaultName": "MyRogueNativeMod",
+  "preferNameDirectory": true,
+  "sources": [{"source":"./","target":"./","rename":{"gitignore.txt":".gitignore"}}],
+  "symbols": {
+    "mod-id": {"type":"parameter","datatype":"text","defaultValue":"sample.native-mod","description":"Stable lowercase package identifier.","replaces":"sample.native-mod"},
+    "mod-name": {"type":"parameter","datatype":"text","defaultValue":"Sample native mod","description":"Human-readable mod name.","replaces":"Sample native mod"},
+    "loader-id": {"type":"parameter","datatype":"text","defaultValue":"SampleNative","description":"Immutable UE4SS loader directory name and C++ mod class name.","replaces":"SampleNative"}
+  }
+}

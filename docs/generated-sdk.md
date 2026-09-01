@@ -25,9 +25,18 @@ Add the authoring targets and typed game SDK to the mod project:
 
 No local game installation, UE4SS developer build, dump hotkey, or JMAP file is required. `PackageRogueMod` excludes `DeadzoneRogue.Sdk.dll` from the mod output. The matching assembly is installed once in `<GameRoot>/RogueMod/runtime/shared` and resolved into every collectible mod context by the runtime. Exact assembly-version matching prevents a mod from silently running against an incompatible generated SDK.
 
-The repository's [`RogueMod.Sample.TypedHooks`](../src/RogueMod.Sample.TypedHooks/README.md) project is a complete external-style example. It consumes only the two public SDK packages, finds a generated object wrapper, invokes a generated method, and mutates a `TMap` out parameter through generated pre- and post-hook delegates. It contains no hand-written Unreal path, native offset, function descriptor, or transport value.
+The repository's [`RogueMod.Sample.TypedHooks`](https://github.com/freakdaniel/RogueMod/blob/master/src/RogueMod.Sample.TypedHooks/README.md) project is a complete external-style example. It consumes only the two public SDK packages, finds a generated object wrapper, invokes a generated method, and mutates a `TMap` out parameter through generated pre- and post-hook delegates. It contains no hand-written Unreal path, native offset, function descriptor, or transport value.
 
-[`RogueMod.Sample.Invulnerability`](../src/RogueMod.Sample.Invulnerability/README.md) continues from transport verification to a practical game hook. It follows generated wrappers from the local `ValPlayerController` to its current `ValCharacter`, observes that exact instance's real `OnDamaged` event, restores health and shields through typed methods, and rebinds after pawn replacement or level travel. Generated post hooks skip pure inputs that their callback cannot consume, so the unsupported `DamageData` structure does not force mod authors back to raw descriptors.
+[`RogueMod.Sample.Invulnerability`](https://github.com/freakdaniel/RogueMod/blob/master/src/RogueMod.Sample.Invulnerability/README.md) continues from transport verification to a practical game hook. It follows generated wrappers from the local `ValPlayerController` to its current `ValCharacter`, observes typed `DamageData` in an exact-instance pre-hook, restores health and shields from the corresponding post-hook, and rebinds after pawn replacement or level travel. The post hook skips its pure input because recovery does not need to decode the same structure twice.
+
+## Gameplay hook notes
+
+The generated SDK intentionally mirrors Unreal and is therefore broad and low-level; gameplay decisions stay with each mod. The following Deadzone: Rogue pipeline observations are recorded so new mods do not have to rediscover them:
+
+- `ValGameplayAbility.ModifyDamageOutput` is the source-side percentage/flat modifier stage consumed by the authoritative damage execution (`ValDamageExecutionCalc`). Outgoing bonuses are expressed as additive fractions there; keeping mutations at this stage leaves health and death ownership untouched.
+- `ValCharacter.OnDamaged` is a replicated post-application notification. Mutating it desynchronizes death presentation from actual health and does not change authoritative damage.
+- Health is server-authoritative. A client-only installation cannot override server-owned health; damage mutations apply in single-player or when RogueMod runs on the co-op host.
+- Player-owned abilities can be identified by checking the avatar character's class path (`CharPlayer`) after resolving it through `GetAvatarActorFromActorInfo`.
 
 ## Maintainer capture
 

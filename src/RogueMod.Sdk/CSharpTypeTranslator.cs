@@ -160,10 +160,10 @@ internal static class CSharpTypeTranslator
                         ? $"{descriptorOwnerExpression}.Map!"
                         : throw new InvalidOperationException($"C# type '{type.Name}' has no container descriptor.");
 
-internal static string? ValueDescriptorExpressionOrNull(CsType type, string descriptorOwnerExpression) =>
-    type.ArrayAdapter || type.OptionalAdapter || type.SetAdapter || type.MapAdapter
-        ? ValueDescriptorExpression(type, descriptorOwnerExpression)
-        : null;
+    internal static string? ValueDescriptorExpressionOrNull(CsType type, string descriptorOwnerExpression) =>
+        type.ArrayAdapter || type.OptionalAdapter || type.SetAdapter || type.MapAdapter
+            ? ValueDescriptorExpression(type, descriptorOwnerExpression)
+            : null;
 
     internal static void AppendValueDescriptors(
         StringBuilder builder,
@@ -234,23 +234,23 @@ internal static string? ValueDescriptorExpressionOrNull(CsType type, string desc
         UnrealSdkTypeReference type,
         IReadOnlySet<string> supportedStructPaths,
         int arrayDepth = 1) => type.Kind switch
-    {
-        "BoolProperty" or "Int8Property" or "ByteProperty" => type.Size == 1,
-        "Int16Property" or "UInt16Property" => type.Size == 2,
-        "IntProperty" or "UInt32Property" or "FloatProperty" => type.Size == 4,
-        "Int64Property" or "UInt64Property" or "DoubleProperty" => type.Size == 8,
-        "EnumProperty" => type.Size is 1 or 2 or 4 or 8,
+        {
+            "BoolProperty" or "Int8Property" or "ByteProperty" => type.Size == 1,
+            "Int16Property" or "UInt16Property" => type.Size == 2,
+            "IntProperty" or "UInt32Property" or "FloatProperty" => type.Size == 4,
+            "Int64Property" or "UInt64Property" or "DoubleProperty" => type.Size == 8,
+            "EnumProperty" => type.Size is 1 or 2 or 4 or 8,
             "ObjectProperty" or "ClassProperty" or "WeakObjectProperty" => type.Size == 8,
             "InterfaceProperty" => type.Size == 16,
             "LazyObjectProperty" => type.Size == 32,
             "SoftObjectProperty" or "SoftClassProperty" => type.Size == 40,
-        "StrProperty" or "TextProperty" => type.Size == 16,
-        "NameProperty" => type.Size == 8,
-        "StructProperty" when type.TypePath is not null => supportedStructPaths.Contains(type.TypePath),
-        "ArrayProperty" when type.Size == 16 && type.Inner is not null && arrayDepth < MaximumArrayNestingDepth =>
-            IsSupportedArrayElement(type.Inner, supportedStructPaths, arrayDepth + 1),
-        _ => false
-    };
+            "StrProperty" or "TextProperty" => type.Size == 16,
+            "NameProperty" => type.Size == 8,
+            "StructProperty" when type.TypePath is not null => supportedStructPaths.Contains(type.TypePath),
+            "ArrayProperty" when type.Size == 16 && type.Inner is not null && arrayDepth < MaximumArrayNestingDepth =>
+                IsSupportedArrayElement(type.Inner, supportedStructPaths, arrayDepth + 1),
+            _ => false
+        };
 
     internal static bool IsSupportedMapKey(UnrealSdkTypeReference type) => type.Kind switch
     {
@@ -267,18 +267,18 @@ internal static string? ValueDescriptorExpressionOrNull(CsType type, string desc
     internal static bool IsSupportedOptionalValue(
         UnrealSdkTypeReference type,
         IReadOnlySet<string> supportedStructPaths) => type.Kind switch
-    {
-        "BoolProperty" or "Int8Property" or "ByteProperty" => type.Size == 1,
-        "Int16Property" or "UInt16Property" => type.Size == 2,
-        "IntProperty" or "UInt32Property" or "FloatProperty" => type.Size == 4,
-        "Int64Property" or "UInt64Property" or "DoubleProperty" => type.Size == 8,
-        "EnumProperty" => type.Size is 1 or 2 or 4 or 8,
-        "ObjectProperty" or "ClassProperty" => type.Size == 8,
-        "StrProperty" or "TextProperty" => type.Size == 16,
-        "NameProperty" => type.Size == 8,
-        "StructProperty" when type.TypePath is not null => supportedStructPaths.Contains(type.TypePath),
-        _ => false
-    };
+        {
+            "BoolProperty" or "Int8Property" or "ByteProperty" => type.Size == 1,
+            "Int16Property" or "UInt16Property" => type.Size == 2,
+            "IntProperty" or "UInt32Property" or "FloatProperty" => type.Size == 4,
+            "Int64Property" or "UInt64Property" or "DoubleProperty" => type.Size == 8,
+            "EnumProperty" => type.Size is 1 or 2 or 4 or 8,
+            "ObjectProperty" or "ClassProperty" => type.Size == 8,
+            "StrProperty" or "TextProperty" => type.Size == 16,
+            "NameProperty" => type.Size == 8,
+            "StructProperty" when type.TypePath is not null => supportedStructPaths.Contains(type.TypePath),
+            _ => false
+        };
 
     internal static IReadOnlySet<string> BuildSupportedStructPaths(IReadOnlyList<UnrealSdkType> types)
     {
@@ -345,8 +345,8 @@ internal static string? ValueDescriptorExpressionOrNull(CsType type, string desc
             }
         }
 
-        // Atomic wrappers (Vector_NetQuantize etc) now inherit fields from super via raw-bytes transport
-        // in the bridge so that X/Y/Z etc become available.
+        // Atomic wrappers (Vector_NetQuantize etc.) inherit fields from their reflected base struct.
+        // The native bridge traverses the same UStruct hierarchy and transports those fields by name.
         return result;
     }
 

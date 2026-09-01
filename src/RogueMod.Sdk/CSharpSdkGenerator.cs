@@ -4,6 +4,10 @@ using System.Text.Json;
 
 namespace RogueMod.Sdk;
 
+/// <summary>
+/// Generates the strongly typed C# game SDK from an imported JMAP model: the wrapper source,
+/// a source manifest with provenance, a packable project, and package metadata.
+/// </summary>
 public sealed class CSharpSdkGenerator
 {
 
@@ -20,6 +24,12 @@ public sealed class CSharpSdkGenerator
         "volatile", "while", "record", "required", "file", "scoped"
     };
 
+    /// <summary>Generates the SDK with the default package metadata.</summary>
+    /// <param name="model">The imported reflection model.</param>
+    /// <param name="outputDirectory">Directory receiving the generated files.</param>
+    /// <param name="rootNamespace">Root namespace of the generated wrappers.</param>
+    /// <param name="abstractionsProjectPath">Optional project reference replacing the package reference to <c>RogueMod.Abstractions</c>.</param>
+    /// <returns>The generated file paths and type count.</returns>
     public CSharpSdkGenerationResult Generate(
         UnrealSdkModel model,
         string outputDirectory,
@@ -27,6 +37,13 @@ public sealed class CSharpSdkGenerator
         string? abstractionsProjectPath = null) =>
         Generate(model, outputDirectory, rootNamespace, abstractionsProjectPath, CSharpSdkPackageMetadata.Default);
 
+    /// <summary>Generates the SDK source, manifest, project, and README into the output directory.</summary>
+    /// <param name="model">The imported reflection model.</param>
+    /// <param name="outputDirectory">Directory receiving the generated files.</param>
+    /// <param name="rootNamespace">Root namespace of the generated wrappers.</param>
+    /// <param name="abstractionsProjectPath">Optional project reference replacing the package reference to <c>RogueMod.Abstractions</c>.</param>
+    /// <param name="packageMetadata">Package identity and compatibility metadata.</param>
+    /// <returns>The generated file paths and type count.</returns>
     public CSharpSdkGenerationResult Generate(
         UnrealSdkModel model,
         string outputDirectory,
@@ -140,6 +157,7 @@ public sealed class CSharpSdkGenerator
                 <Deterministic>true</Deterministic>
                 <AssemblyName>DeadzoneRogue.Sdk</AssemblyName>
                 <RootNamespace>{EscapeXml(NormalizeNamespace(rootNamespace))}</RootNamespace>
+                <GenerateDocumentationFile>true</GenerateDocumentationFile>
                 <PackageId>{EscapeXml(packageMetadata.PackageId)}</PackageId>
                 <Version>{EscapeXml(packageMetadata.PackageVersion)}</Version>
                 <Title>Deadzone: Rogue typed SDK</Title>
@@ -399,12 +417,14 @@ public sealed class CSharpSdkGenerator
 
     private static void WriteEnum(StringBuilder builder, UnrealSdkType type, string typeName)
     {
+        WriteDoc(builder, string.Empty, $"Generated wrapper for the Unreal enum {type.Path}.");
         builder.Append("public enum ").Append(typeName).AppendLine(" : long");
         builder.AppendLine("{");
         var used = new HashSet<string>(StringComparer.Ordinal) { typeName };
         foreach (var value in type.EnumValues)
         {
             var name = UniqueIdentifier(LeafName(value.Name), used);
+            WriteDoc(builder, "    ", $"Reflected enum value {value.Name}.");
             builder.Append("    ").Append(name).Append(" = ").Append(value.Value).AppendLine(",");
         }
         builder.AppendLine("}");
@@ -418,6 +438,12 @@ public sealed class CSharpSdkGenerator
         IReadOnlySet<string> supportedStructPaths,
         IReadOnlyDictionary<string, UnrealSdkType> allStructs)
     {
+        WriteDoc(
+            builder,
+            string.Empty,
+            supportedStructPaths.Contains(type.Path)
+                ? $"Generated wrapper for the Unreal struct {type.Path}. Supported for field-wise transport; the Descriptor member exposes the verified layout."
+                : $"Generated wrapper for the Unreal struct {type.Path}. Not transportable; instances cross the boundary as UnrealValue.");
         builder.Append("public readonly record struct ").Append(typeName).AppendLine();
         builder.AppendLine("{");
         var used = new HashSet<string>(StringComparer.Ordinal) { typeName };
@@ -426,8 +452,13 @@ public sealed class CSharpSdkGenerator
 
         foreach (var property in allFields)
         {
-            var name = UniqueIdentifier(property.Name, used);
             var propertyType = ResolveType(property.Type, property.ArrayDimension, typeNames, supportedStructPaths);
+            var name = UniqueIdentifier(property.Name, used);
+            WriteDoc(
+                builder,
+                "    ",
+                $"Reflected field {property.Name} of kind {property.Type.Kind}"
+                + (property.ArrayDimension > 1 ? $" (fixed array of {property.ArrayDimension})." : "."));
             builder.Append("    public ").Append(propertyType.Name).Append(' ').Append(name).AppendLine(" { get; init; }");
         }
 
@@ -436,12 +467,19 @@ public sealed class CSharpSdkGenerator
             WriteStructAdapter(builder, type, typeName, typeNames, supportedStructPaths, allStructs);
         }
 
-        // For vector-like types (the main thing modders touch inside DamageData etc.)
+        // For numeric vector-like types (the main thing modders touch inside DamageData etc.)
         // emit a clean, culture-invariant ToString so output always uses '.' as decimal.
-        bool isVectorLike = allFields.Any(p => p.Name == "X") && allFields.Any(p => p.Name == "Y") && allFields.Any(p => p.Name == "Z");
-        if (isVectorLike && allFields.Count <= 4)
+        var vectorCoordinates = allFields
+            .Where(property => property.Name is "X" or "Y" or "Z")
+            .ToArray();
+        var isVectorLike = vectorCoordinates.Length == 3
+            && allFields.Count <= 4
+            && vectorCoordinates.All(property => IsNumericCoordinate(
+                ResolveType(property.Type, property.ArrayDimension, typeNames, supportedStructPaths)));
+        if (isVectorLike)
         {
             builder.AppendLine();
+            WriteDoc(builder, "    ", "Formats the vector with culture-invariant '.' decimal separators.");
             builder.AppendLine("    public override string ToString()");
             builder.AppendLine("    {");
             builder.AppendLine("        return global::System.FormattableString.Invariant($\"({X}, {Y}, {Z})\");");
@@ -450,6 +488,9 @@ public sealed class CSharpSdkGenerator
 
         builder.AppendLine("}");
     }
+
+    private static bool IsNumericCoordinate(CsType type) => type.Name is
+        "sbyte" or "byte" or "short" or "ushort" or "int" or "uint" or "long" or "ulong" or "float" or "double";
 
     private static void WriteClass(
         StringBuilder builder,
@@ -462,14 +503,21 @@ public sealed class CSharpSdkGenerator
         var hasGeneratedBase = type.SuperPath is not null && typeNames.TryGetValue(type.SuperPath, out generatedBase);
         var baseName = hasGeneratedBase ? generatedBase : "UnrealObject";
         var hidingModifier = hasGeneratedBase ? "new " : string.Empty;
+        WriteDoc(builder, string.Empty, $"Generated wrapper for the Unreal class {type.Path}.");
         builder.Append("public class ").Append(typeName).Append(" : ").Append(baseName)
             .Append(", IUnrealObjectType<").Append(typeName).AppendLine(">");
         builder.AppendLine("{");
+        WriteDoc(builder, "    ", "Full Unreal path of the reflected class.");
         builder.Append("    public ").Append(hidingModifier).Append("const string UnrealPath = ").Append(Literal(type.Path)).AppendLine(";");
+        WriteDoc(builder, "    ", "Reflected class short name.");
         builder.Append("    public ").Append(hidingModifier).Append("const string UnrealName = ").Append(Literal(type.Name)).AppendLine(";");
+        WriteDoc(builder, "    ", "Path of the engine class default object (CDO).");
         builder.Append("    public ").Append(hidingModifier).Append("const string DefaultObjectPath = ")
             .Append(Literal(GetDefaultObjectPath(type.Path, type.Name))).AppendLine(";");
         builder.AppendLine();
+        WriteDoc(builder, "    ", "Wraps one live instance of the class.");
+        WriteParamDoc(builder, "    ", "unreal", "The live reflection service.");
+        WriteParamDoc(builder, "    ", "handle", "The object handle to wrap.");
         builder.Append("    public ").Append(typeName)
             .Append("(IUnrealReflection unreal, UnrealObjectHandle handle) : base(unreal, handle) { }").AppendLine();
         builder.AppendLine();
@@ -477,12 +525,16 @@ public sealed class CSharpSdkGenerator
         builder.Append("    static ").Append(typeName).Append(" IUnrealObjectType<").Append(typeName)
             .Append(">.Create(IUnrealReflection unreal, UnrealObjectHandle handle) => new(unreal, handle);").AppendLine();
         builder.AppendLine();
+        WriteDoc(builder, "    ", "Finds the first live instance of the class, or null when none exists.");
+        WriteParamDoc(builder, "    ", "unreal", "The live reflection service.");
         builder.Append("    public ").Append(hidingModifier).Append("static ").Append(typeName).AppendLine("? FindFirst(IUnrealReflection unreal)");
         builder.AppendLine("    {");
         builder.AppendLine("        ArgumentNullException.ThrowIfNull(unreal);");
         builder.Append("        return unreal.FindFirst<").Append(typeName).AppendLine(">();");
         builder.AppendLine("    }");
         builder.AppendLine();
+        WriteDoc(builder, "    ", "Finds the engine class default object (CDO), or null when it is not loaded.");
+        WriteParamDoc(builder, "    ", "unreal", "The live reflection service.");
         builder.Append("    public ").Append(hidingModifier).Append("static ").Append(typeName).AppendLine("? FindDefaultObject(IUnrealReflection unreal)");
         builder.AppendLine("    {");
         builder.AppendLine("        ArgumentNullException.ThrowIfNull(unreal);");
@@ -490,6 +542,8 @@ public sealed class CSharpSdkGenerator
         builder.AppendLine("        return handle.IsNull || !unreal.IsValid(handle) ? null : new(unreal, handle);");
         builder.AppendLine("    }");
         builder.AppendLine();
+        WriteDoc(builder, "    ", "Finds every live instance of the class.");
+        WriteParamDoc(builder, "    ", "unreal", "The live reflection service.");
         builder.Append("    public ").Append(hidingModifier).Append("static IReadOnlyList<").Append(typeName)
             .AppendLine("> FindAll(IUnrealReflection unreal)");
         builder.AppendLine("    {");
@@ -549,6 +603,12 @@ public sealed class CSharpSdkGenerator
         builder.Append(')');
         AppendValueDescriptorInitializer(builder, property.Type, typeNames, supportedStructPaths);
         builder.AppendLine(";");
+        WriteDoc(
+            builder,
+            "    ",
+            CanWrite(property.Flags)
+                ? $"Reflected property {property.Name} of kind {property.Type.Kind}. Readable and writable."
+                : $"Reflected property {property.Name} of kind {property.Type.Kind}. Read-only.");
         builder.Append("    public ").Append(type.Name).Append(' ').Append(memberName).AppendLine();
         builder.AppendLine("    {");
         if (type.ObjectWrapper)
@@ -658,6 +718,20 @@ public sealed class CSharpSdkGenerator
         var resultName = methodName + "InvocationResult";
         if (outputs.Length > 0)
         {
+            WriteDoc(builder, "    ", $"Typed result of {methodName}, exposing the return value and out arguments.");
+            if (returnParameter is not null)
+            {
+                WriteParamDoc(builder, "    ", "ReturnValue", "The original UFunction return value.");
+            }
+            var outputResultNames = new HashSet<string>(StringComparer.Ordinal) { "ReturnValue" };
+            foreach (var output in outputs)
+            {
+                WriteParamDoc(
+                    builder,
+                    "    ",
+                    UniqueIdentifier(output.Name, outputResultNames),
+                    $"The out parameter {output.Name} of kind {output.Type.Kind}.");
+            }
             builder.Append("    public readonly record struct ").Append(resultName).Append('(');
             var resultParts = new List<string>();
             if (returnParameter is not null)
@@ -671,6 +745,11 @@ public sealed class CSharpSdkGenerator
         }
 
         var methodReturnType = outputs.Length > 0 ? resultName : directReturnType.Name;
+        WriteDoc(builder, "    ", $"Invokes the reflected Unreal function {function.Path}.");
+        foreach (var input in inputs)
+        {
+            WriteParamDoc(builder, "    ", inputNames[input], $"The {input.Name} input of kind {input.Type.Kind}.");
+        }
         builder.Append("    public ").Append(methodReturnType).Append(' ').Append(methodName).Append('(');
         builder.Append(string.Join(", ", inputs.Select(input =>
             $"{ResolveType(input.Type, input.ArrayDimension, typeNames, supportedStructPaths).Name} {inputNames[input]}")));
@@ -789,8 +868,21 @@ public sealed class CSharpSdkGenerator
         postParts.AddRange(postOutputs.Select(parameter => $"ref {parameter.Type.Name} {parameter.Name}"));
 
         builder.AppendLine();
+        WriteDoc(builder, "    ", $"Callback for the pre-hook of {function.Name}; assignments to ref parameters are written back into the call before the original function runs.");
+        WriteParamDoc(builder, "    ", "context", "The wrapped instance the UFunction was called on.");
+        foreach (var parameter in preParameters)
+        {
+            WriteParamDoc(builder, "    ", parameter.Name, $"The {parameter.Property.Name} input of kind {parameter.Property.Type.Kind}; assign through the ref to replace it.");
+        }
         builder.Append("    public delegate void ").Append(preHandlerName).Append('(')
             .Append(string.Join(", ", preParts)).AppendLine(");");
+        WriteDoc(
+            builder,
+            "    ",
+            $"Registers a pre-hook observing {function.Path}. Returns a subscription; dispose it to remove the hook early.");
+        WriteParamDoc(builder, "    ", "unreal", "The live reflection service.");
+        WriteParamDoc(builder, "    ", "callback", "The callback invoked for every matching call.");
+        WriteParamDoc(builder, "    ", "options", "Optional priority and instance filter.");
         builder.Append("    public static IDisposable ").Append(preMethodName)
             .Append("(IUnrealReflection unreal, ").Append(preHandlerName)
             .AppendLine(" callback, UnrealHookOptions options = default)");
@@ -835,8 +927,25 @@ public sealed class CSharpSdkGenerator
         builder.AppendLine("    }");
 
         builder.AppendLine();
+        WriteDoc(builder, "    ", $"Callback for the post-hook of {function.Name}; assignments to the ref return value and ref out parameters are written back into the call results.");
+        WriteParamDoc(builder, "    ", "context", "The wrapped instance the UFunction was called on.");
+        if (postReturn is { } documentedReturn)
+        {
+            WriteParamDoc(builder, "    ", documentedReturn.Name, "The original return value; assign through the ref to replace it.");
+        }
+        foreach (var parameter in postOutputs)
+        {
+            WriteParamDoc(builder, "    ", parameter.Name, $"The {parameter.Property.Name} out parameter of kind {parameter.Property.Type.Kind}; assign through the ref to replace it.");
+        }
         builder.Append("    public delegate void ").Append(postHandlerName).Append('(')
             .Append(string.Join(", ", postParts)).AppendLine(");");
+        WriteDoc(
+            builder,
+            "    ",
+            $"Registers a post-hook observing {function.Path}. Pure input parameters are not decoded. Returns a subscription; dispose it to remove the hook early.");
+        WriteParamDoc(builder, "    ", "unreal", "The live reflection service.");
+        WriteParamDoc(builder, "    ", "callback", "The callback invoked for every matching call.");
+        WriteParamDoc(builder, "    ", "options", "Optional priority and instance filter.");
         builder.Append("    public static IDisposable ").Append(postMethodName)
             .Append("(IUnrealReflection unreal, ").Append(postHandlerName)
             .AppendLine(" callback, UnrealHookOptions options = default)");
@@ -945,6 +1054,7 @@ public sealed class CSharpSdkGenerator
         var fieldNames = fields.ToDictionary(field => field, field => UniqueIdentifier(field.Name, used));
 
         builder.AppendLine();
+        WriteDoc(builder, "    ", "Verified field-wise transport layout of the struct.");
         builder.AppendLine("    public static UnrealStructDescriptor Descriptor { get; } = new(");
         builder.Append("        ").Append(Literal(type.Path)).Append(", ").Append(type.Size).Append(", ").Append(type.Alignment).AppendLine(", [");
         foreach (var field in fields)
@@ -974,6 +1084,7 @@ public sealed class CSharpSdkGenerator
         builder.AppendLine(");");
 
         builder.AppendLine();
+        WriteDoc(builder, "    ", "Encodes this instance for field-wise transport.");
         builder.AppendLine("    public UnrealValue ToUnrealValue() => UnrealValue.From(new UnrealStructValue(");
         builder.AppendLine("        Descriptor,");
         builder.AppendLine("        new Dictionary<string, UnrealValue>(StringComparer.Ordinal)");
@@ -990,6 +1101,7 @@ public sealed class CSharpSdkGenerator
         builder.AppendLine("        }));");
 
         builder.AppendLine();
+        WriteDoc(builder, "    ", "Decodes a transported struct value into this wrapper.");
         builder.Append("    public static ").Append(typeName)
             .AppendLine(" FromUnrealValue(UnrealValue value, IUnrealReflection unreal)");
         builder.AppendLine("    {");
@@ -1121,6 +1233,17 @@ public sealed class CSharpSdkGenerator
 
     private static string DescribeType(UnrealSdkTypeReference type) => CSharpTypeTranslator.Describe(type);
 
+    private static void WriteDoc(StringBuilder builder, string indent, string text)
+    {
+        builder.Append(indent).Append("/// <summary>").Append(EscapeXml(text)).AppendLine("</summary>");
+    }
+
+    private static void WriteParamDoc(StringBuilder builder, string indent, string name, string text)
+    {
+        builder.Append(indent).Append("/// <param name=\"").Append(EscapeXml(name)).Append("\">")
+            .Append(EscapeXml(text)).AppendLine("</param>");
+    }
+
     private static string Literal(string value) => JsonSerializer.Serialize(value);
 
     private static string EscapeXml(string value) =>
@@ -1131,13 +1254,24 @@ public sealed class CSharpSdkGenerator
 
 }
 
+/// <summary>The file paths and type count produced by one SDK generation.</summary>
+/// <param name="SourcePath">Path of the generated <c>RogueMod.GameSdk.g.cs</c> source.</param>
+/// <param name="ManifestPath">Path of the generated source manifest JSON.</param>
+/// <param name="ProjectPath">Path of the generated SDK project.</param>
+/// <param name="TypeCount">Number of reflected types included in the SDK.</param>
 public sealed record CSharpSdkGenerationResult(string SourcePath, string ManifestPath, string ProjectPath, int TypeCount);
 
+/// <summary>Package identity and compatibility metadata for a generated game SDK.</summary>
+/// <param name="PackageId">NuGet package id, for example <c>DeadzoneRogue.Sdk</c>.</param>
+/// <param name="PackageVersion">NuGet package version.</param>
+/// <param name="RogueModVersion">The compatible RogueMod version.</param>
+/// <param name="GameVersion">The verified game build version, when known.</param>
 public sealed record CSharpSdkPackageMetadata(
     string PackageId = "DeadzoneRogue.Sdk",
     string PackageVersion = "0.1.0",
     string RogueModVersion = "0.1.0",
     string? GameVersion = null)
 {
+    /// <summary>Gets the default metadata used for local, non-published generation.</summary>
     public static CSharpSdkPackageMetadata Default { get; } = new();
 }

@@ -15,13 +15,6 @@
 
 namespace RogueMod
 {
-    /// <summary>
-    /// Authoritative UE 5.6.1 sparse-container layouts from the vanilla engine source
-    /// (Core/Public/Containers/{SparseArray,Set,Map,BitArray}.h). FScriptMap/FScriptSet are an
-    /// 80-byte footprint (a 56-byte sparse array, a 16-byte inline hash allocator, and the
-    /// 32-bit bucket count); the bridge validates the 80-byte footprint and the runtime layout
-    /// before reading any element.
-    /// </summary>
     namespace ScriptContainers
     {
         struct SparseArrayLayout
@@ -61,9 +54,6 @@ namespace RogueMod
 
         struct ScriptBitArray
         {
-            // FDefaultBitArrayAllocator is TInlineAllocator<4>. Its allocator instance
-            // stores four uint32 words inline and only uses secondary_data after that
-            // capacity is exceeded.
             std::uint32_t inline_data[4];
             void* secondary_data;
             std::int32_t num_bits;
@@ -92,15 +82,6 @@ namespace RogueMod
         static_assert(offsetof(ScriptSparseArray, first_free_index) == 48);
         static_assert(sizeof(ScriptSparseArray) == 56);
 
-        /// <summary>
-        /// FScriptSet/FScriptMap layout for this build (80-byte footprint), derived from the
-        /// pinned UE 5.6.1 container source (Containers/{Set,Map}.h). The sparse element
-        /// array occupies the first 56 bytes; the hash table follows as TInlineAllocator&lt;1&gt;
-        /// holding a single inline FSetElementId bucket at +56 and a heap bucket-array pointer
-        /// at +64, with the bucket count at +72. GetAllocation() returns the heap pointer when
-        /// non-null, so a write always allocates a heap bucket array (count &gt;= 1) and leaves
-        /// the inline bucket INDEX_NONE.
-        /// </summary>
         constexpr std::size_t script_set_inline_bucket_offset = 56;
         constexpr std::size_t script_set_hash_offset = 64;
         constexpr std::size_t script_set_hash_size_offset = 72;
@@ -217,6 +198,7 @@ namespace RogueMod
         using ftext_copy_assignment_fn = void*(__cdecl*)(void*, const void*);
         using get_first_property_fn = void*(__cdecl*)(void*);
         using get_next_field_as_property_fn = void*(__cdecl*)(void*);
+        using get_super_struct_fn = void**(__cdecl*)(void*);
         using get_array_inner_fn = void**(__cdecl*)(void*);
         using get_optional_value_property_fn = void**(__cdecl*)(const void*);
         using get_key_prop_fn = void* const*(__cdecl*)(const void*);
@@ -280,11 +262,6 @@ namespace RogueMod
             const void*& element) const;
         [[nodiscard]] bool validate_script_set_layout(
             const ScriptContainers::SetLayout& layout) const;
-        /// <summary>
-        /// Resolves FProperty::GetValueTypeHashInternal for the given live property through
-        /// the game vtable and returns the hash of the value at <paramref name="address"/>.
-        /// Returns false when the vtable slot cannot be resolved or validated.
-        /// </summary>
         [[nodiscard]] bool get_value_type_hash(
             void* property,
             const void* address,
@@ -302,6 +279,9 @@ namespace RogueMod
         [[nodiscard]] bool resolve_property_kind(
             void* property,
             std::uint32_t& encoded_kind) const;
+        [[nodiscard]] bool collect_struct_fields(
+            void* script_struct,
+            std::vector<void*>& fields) const;
         [[nodiscard]] bool marshal_struct_fields(
             void* property,
             const void* address,
@@ -319,9 +299,6 @@ namespace RogueMod
             void* hash_property,
             const ScriptContainers::SetLayout& set_layout,
             const std::function<bool(std::size_t index, void* block)>& construct_element) const;
-        /// Writes one marshalled value through its live property. Returns 0 on success or a
-        /// negative native status: -4 generic rejection, -7 object setter rejected the
-        /// write, -8 the previous value changed and could not be restored.
         [[nodiscard]] std::int32_t assign_typed_value(
             void* property,
             void* address,
@@ -400,6 +377,7 @@ namespace RogueMod
         ftext_copy_assignment_fn m_ftext_copy_assignment{};
         get_first_property_fn m_get_first_property{};
         get_next_field_as_property_fn m_get_next_field_as_property{};
+        get_super_struct_fn m_get_super_struct{};
         get_array_inner_fn m_get_array_inner{};
         get_key_prop_fn m_get_key_prop{};
         get_value_prop_fn m_get_value_prop{};

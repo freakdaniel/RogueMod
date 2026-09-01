@@ -232,6 +232,36 @@ public sealed class NuGetPackageTests
                 "mod.json")),
             "The dotnet new starter did not build a ready mod package.");
 
+        var runtimeDependency = Path.Combine(temporaryDirectory.Path, "runtime-dependency");
+        Directory.CreateDirectory(runtimeDependency);
+        await File.WriteAllTextAsync(Path.Combine(runtimeDependency, "External.RuntimeDependency.csproj"), """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup>
+                <TargetFramework>net10.0</TargetFramework>
+                <PackageId>External.RuntimeDependency</PackageId>
+                <Version>1.0.0</Version>
+              </PropertyGroup>
+            </Project>
+            """, TestContext.Current.CancellationToken);
+        await File.WriteAllTextAsync(Path.Combine(runtimeDependency, "RuntimeMarker.cs"), """
+            namespace External.RuntimeDependency;
+
+            public static class RuntimeMarker
+            {
+                public static string Value => "runtime dependency loaded";
+            }
+            """, TestContext.Current.CancellationToken);
+        await RunDotNet(
+            runtimeDependency,
+            environment,
+            "pack",
+            Path.Combine(runtimeDependency, "External.RuntimeDependency.csproj"),
+            "--configuration",
+            "Release",
+            "--output",
+            feed,
+            "--nologo");
+
         var projectPath = Path.Combine(consumer, "ExternalMod.csproj");
         await File.WriteAllTextAsync(projectPath, """
             <Project Sdk="Microsoft.NET.Sdk">
@@ -247,6 +277,7 @@ public sealed class NuGetPackageTests
             using System.Threading;
             using System.Threading.Tasks;
             using DeadzoneRogue.Sdk;
+            using External.RuntimeDependency;
             using RogueMod.Abstractions;
 
             namespace ExternalPackageTest;
@@ -256,6 +287,7 @@ public sealed class NuGetPackageTests
                 public ValueTask LoadAsync(IModContext context, CancellationToken cancellationToken = default)
                 {
                     _ = context.Unreal.FindFirst<TestActor>();
+                    _ = RuntimeMarker.Value;
                     return ValueTask.CompletedTask;
                 }
 
@@ -288,6 +320,18 @@ public sealed class NuGetPackageTests
             "--source",
             feed,
             "--no-restore");
+        await RunDotNet(
+            consumer,
+            environment,
+            "add",
+            projectPath,
+            "package",
+            "External.RuntimeDependency",
+            "--version",
+            "1.0.0",
+            "--source",
+            feed,
+            "--no-restore");
         await RunDotNet(consumer, environment, "restore", projectPath, "--source", feed, "--nologo");
         await RunDotNet(
             consumer,
@@ -309,6 +353,7 @@ public sealed class NuGetPackageTests
         Assert.DoesNotContain("DeadzoneRogue.Sdk.dll", buildAssemblies);
         var packagedAssemblies = Directory.GetFiles(Path.Combine(modPackage, "dlls"), "*.dll").Select(Path.GetFileName).Order(StringComparer.Ordinal).ToArray();
         Assert.DoesNotContain("DeadzoneRogue.Sdk.dll", packagedAssemblies);
+        Assert.Contains("External.RuntimeDependency.dll", packagedAssemblies);
 
         var sharedAssemblyDirectory = Path.Combine(temporaryDirectory.Path, "runtime", "shared");
         Directory.CreateDirectory(sharedAssemblyDirectory);

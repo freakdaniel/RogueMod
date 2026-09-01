@@ -1,0 +1,14 @@
+{
+  "id": "sample.lua-mod",
+  "name": "Sample Lua mod",
+  "version": "0.1.0",
+  "kind": "lua",
+  "entryPoint": "Scripts/main.lua",
+  "loaderId": "SampleLua",
+  "description": "A Lua Deadzone: Rogue mod built with RogueMod.",
+  "icon": null,
+  "images": [],
+  "defaultLanguage": "en",
+  "supportedLanguages": ["en"],
+  "localizations": {}
+}

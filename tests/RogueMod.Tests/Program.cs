@@ -36,6 +36,15 @@ public sealed class RogueModTests
     public void ManagedModScaffolderCreatesStandaloneStarterTest() => ManagedModScaffolderCreatesStandaloneStarter();
 
     [Fact]
+    public void LuaModScaffolderCreatesInstallableStarterTest() => LuaModScaffolderCreatesInstallableStarter();
+
+    [Fact]
+    public void NativeModScaffolderCreatesInstallableStarterTest() => NativeModScaffolderCreatesInstallableStarter();
+
+    [Fact]
+    public void PakModScaffolderCreatesInstallableStarterTest() => PakModScaffolderCreatesInstallableStarter();
+
+    [Fact]
     public void ManagedPackageInstallsTransactionallyTest() => ManagedPackageInstallsTransactionally();
 
     [Fact]
@@ -1329,7 +1338,7 @@ public sealed class RogueModTests
         var output = Path.Combine(directory.Path, "sdk");
         var abstractionsProject = FindRepositoryFile("src/RogueMod.Abstractions/RogueMod.Abstractions.csproj");
         var result = new CSharpSdkGenerator().Generate(model, output, "DeadzoneRogue.Sdk", abstractionsProject);
-        var generatedSource = File.ReadAllText(result.SourcePath);
+        var generatedSource = File.ReadAllText(result.SourcePath).Replace("\r\n", "\n", StringComparison.Ordinal);
         var source = generatedSource.Replace("global::DeadzoneRogue.Sdk.", string.Empty, StringComparison.Ordinal);
         var secondOutput = Path.Combine(directory.Path, "sdk-repeat");
         var repeatedResult = new CSharpSdkGenerator().Generate(model, secondOutput, "DeadzoneRogue.Sdk", abstractionsProject);
@@ -1543,6 +1552,182 @@ public sealed class RogueModTests
             refusedOverwrite = true;
         }
         Assert(refusedOverwrite, "The scaffolder overwrote an existing project directory.");
+    }
+
+    static void LuaModScaffolderCreatesInstallableStarter()
+    {
+        using var directory = new TemporaryDirectory();
+        var output = Path.Combine(directory.Path, "FirstLuaMod");
+        var result = new LuaModScaffolder().Create(new LuaModScaffoldOptions
+        {
+            ModId = "example.first-lua-mod",
+            ProjectName = "Example.FirstLuaMod",
+            DisplayName = "Example first Lua mod",
+            LoaderId = "ExampleFirstLua",
+            OutputDirectory = output
+        });
+
+        Assert(File.Exists(result.ManifestPath), "The Lua starter manifest was not created.");
+        Assert(File.Exists(result.EntryPointPath), "The Lua starter entry point was not created.");
+        Assert(File.Exists(Path.Combine(output, "README.md")), "The Lua starter readme was not created.");
+
+        var manifest = ModManifestLoader.Load(result.ManifestPath);
+        Assert(manifest.Kind == ModKind.Lua, "The Lua starter manifest did not declare the lua kind.");
+        Assert(manifest.Id == "example.first-lua-mod", "The requested mod id was not applied.");
+        Assert(manifest.LoaderId == "ExampleFirstLua", "The requested loader id was not applied.");
+
+        var script = File.ReadAllText(result.EntryPointPath);
+        Assert(script.Contains("Example first Lua mod", StringComparison.Ordinal),
+            "The display name was not applied to the Lua entry point.");
+        Assert(!Directory.EnumerateFiles(output, "*", SearchOption.AllDirectories)
+            .Select(File.ReadAllText)
+            .Any(text => text.Contains("sample.lua-mod", StringComparison.Ordinal)
+                || text.Contains("SampleLua", StringComparison.Ordinal)),
+            "A template token leaked into the generated starter.");
+
+        var profile = GameProfileLoader.Load(FindRepositoryFile("config/Profiles/deadzone-rogue.json"));
+        using var gameDirectory = new TemporaryDirectory();
+        var install = new ModManager().Install(profile, gameDirectory.Path, output);
+        Assert(install.Deployments.Count == 1, "The Lua starter did not produce a UE4SS deployment.");
+        Assert(File.Exists(Path.Combine(install.Deployments[0], "Scripts", "main.lua")),
+            "The deployed Lua package lost its entry point.");
+
+        var refusedOverwrite = false;
+        try
+        {
+            new LuaModScaffolder().Create(new LuaModScaffoldOptions
+            {
+                ModId = "example.first-lua-mod",
+                ProjectName = "Example.FirstLuaMod",
+                DisplayName = "Example first Lua mod",
+                LoaderId = "ExampleFirstLua",
+                OutputDirectory = output
+            });
+        }
+        catch (IOException)
+        {
+            refusedOverwrite = true;
+        }
+        Assert(refusedOverwrite, "The Lua scaffolder overwrote an existing project directory.");
+    }
+
+    static void NativeModScaffolderCreatesInstallableStarter()
+    {
+        using var directory = new TemporaryDirectory();
+        var output = Path.Combine(directory.Path, "FirstNativeMod");
+        var result = new NativeModScaffolder().Create(new NativeModScaffoldOptions
+        {
+            ModId = "example.first-native-mod",
+            ProjectName = "Example.FirstNativeMod",
+            DisplayName = "Example first native mod",
+            LoaderId = "ExampleFirstNative",
+            OutputDirectory = output
+        });
+
+        Assert(File.Exists(result.ManifestPath), "The native starter manifest was not created.");
+        Assert(File.Exists(result.SourcePath), "The native starter source was not created.");
+        Assert(File.Exists(result.CMakeListsPath), "The native starter CMakeLists was not created.");
+        Assert(File.Exists(Path.Combine(output, "README.md")), "The native starter readme was not created.");
+        Assert(File.Exists(Path.Combine(output, ".gitignore")), "The native starter .gitignore was not created.");
+
+        var manifest = ModManifestLoader.Load(result.ManifestPath);
+        Assert(manifest.Kind == ModKind.Native, "The native starter manifest did not declare the native kind.");
+        Assert(manifest.Id == "example.first-native-mod", "The requested mod id was not applied.");
+        Assert(manifest.LoaderId == "ExampleFirstNative", "The requested loader id was not applied.");
+
+        Assert(!Directory.EnumerateFiles(output, "*", SearchOption.AllDirectories)
+            .Select(File.ReadAllText)
+            .Any(text => text.Contains("sample.native-mod", StringComparison.Ordinal)
+                || text.Contains("SampleNative", StringComparison.Ordinal)
+                || text.Contains("RogueMod.NativeMod", StringComparison.Ordinal)
+                || text.Contains("Sample native mod", StringComparison.Ordinal)),
+            "A template token leaked into the generated starter.");
+
+        var cmake = File.ReadAllText(result.CMakeListsPath);
+        Assert(cmake.Contains("src/Example.FirstNativeMod.cpp", StringComparison.Ordinal),
+            "The CMakeLists did not reference the renamed source file.");
+
+        var profile = GameProfileLoader.Load(FindRepositoryFile("config/Profiles/deadzone-rogue.json"));
+        using var gameDirectory = new TemporaryDirectory();
+        Directory.CreateDirectory(result.PackageDirectory);
+        File.Copy(result.ManifestPath, Path.Combine(result.PackageDirectory, "mod.json"));
+        Touch(result.PackageDirectory, "dlls/main.dll");
+        var install = new ModManager().Install(profile, gameDirectory.Path, result.PackageDirectory);
+        Assert(install.Deployments.Count == 1, "The native starter did not produce a UE4SS deployment.");
+        Assert(File.Exists(Path.Combine(install.Deployments[0], "dlls", "main.dll")),
+            "The deployed native package lost its binary.");
+
+        var refusedOverwrite = false;
+        try
+        {
+            new NativeModScaffolder().Create(new NativeModScaffoldOptions
+            {
+                ModId = "example.first-native-mod",
+                ProjectName = "Example.FirstNativeMod",
+                DisplayName = "Example first native mod",
+                LoaderId = "ExampleFirstNative",
+                OutputDirectory = output
+            });
+        }
+        catch (IOException)
+        {
+            refusedOverwrite = true;
+        }
+        Assert(refusedOverwrite, "The native scaffolder overwrote an existing project directory.");
+    }
+
+    static void PakModScaffolderCreatesInstallableStarter()
+    {
+        using var directory = new TemporaryDirectory();
+        var output = Path.Combine(directory.Path, "FirstPakMod");
+        var result = new PakModScaffolder().Create(new PakModScaffoldOptions
+        {
+            ModId = "example.first-pak-mod",
+            ProjectName = "Example.FirstPakMod",
+            DisplayName = "Example first pak mod",
+            OutputDirectory = output
+        });
+
+        Assert(File.Exists(result.ManifestPath), "The pak starter manifest was not created.");
+        Assert(File.Exists(Path.Combine(output, "README.md")), "The pak starter readme was not created.");
+        Assert(File.Exists(Path.Combine(output, ".gitignore")), "The pak starter .gitignore was not created.");
+
+        var manifest = ModManifestLoader.Load(result.ManifestPath);
+        Assert(manifest.Kind == ModKind.Pak, "The pak starter manifest did not declare the pak kind.");
+        Assert(manifest.Id == "example.first-pak-mod", "The requested mod id was not applied.");
+        Assert(manifest.EntryPoint == "paks/example.first-pak-mod.pak", "The pak entry point was not derived from the mod id.");
+        Assert(manifest.LoaderId is null, "The pak starter manifest must not declare a loaderId.");
+
+        Assert(!Directory.EnumerateFiles(output, "*", SearchOption.AllDirectories)
+            .Select(File.ReadAllText)
+            .Any(text => text.Contains("sample.pak-mod", StringComparison.Ordinal)
+                || text.Contains("RogueMod.PakMod", StringComparison.Ordinal)
+                || text.Contains("Sample pak mod", StringComparison.Ordinal)),
+            "A template token leaked into the generated starter.");
+
+        var profile = GameProfileLoader.Load(FindRepositoryFile("config/Profiles/deadzone-rogue.json"));
+        using var gameDirectory = new TemporaryDirectory();
+        Touch(output, "paks/example.first-pak-mod.pak");
+        var install = new ModManager().Install(profile, gameDirectory.Path, output);
+        Assert(install.Deployments.Count == 1, "The pak starter did not deploy its payload.");
+        Assert(File.Exists(install.Deployments[0]), "The pak payload was not deployed.");
+
+        var refusedOverwrite = false;
+        try
+        {
+            new PakModScaffolder().Create(new PakModScaffoldOptions
+            {
+                ModId = "example.first-pak-mod",
+                ProjectName = "Example.FirstPakMod",
+                DisplayName = "Example first pak mod",
+                OutputDirectory = output
+            });
+        }
+        catch (IOException)
+        {
+            refusedOverwrite = true;
+        }
+        Assert(refusedOverwrite, "The pak scaffolder overwrote an existing project directory.");
     }
 }
 

@@ -26,6 +26,28 @@
                       LogicalName="RogueMod.Templates.Managed.ModSource" />
     <EmbeddedResource Include="../RogueMod.Templates/content/RogueMod.ManagedMod/src/RogueMod.ManagedMod/mod.json"
                       LogicalName="RogueMod.Templates.Managed.Manifest" />
+    <EmbeddedResource Include="../RogueMod.Templates/content/RogueMod.LuaMod/README.md"
+                      LogicalName="RogueMod.Templates.Lua.Readme" />
+    <EmbeddedResource Include="../RogueMod.Templates/content/RogueMod.LuaMod/Scripts/main.lua"
+                      LogicalName="RogueMod.Templates.Lua.Script" />
+    <EmbeddedResource Include="../RogueMod.Templates/content/RogueMod.LuaMod/mod.json"
+                      LogicalName="RogueMod.Templates.Lua.Manifest" />
+    <EmbeddedResource Include="../RogueMod.Templates/content/RogueMod.NativeMod/CMakeLists.txt"
+                      LogicalName="RogueMod.Templates.Native.CMakeLists" />
+    <EmbeddedResource Include="../RogueMod.Templates/content/RogueMod.NativeMod/gitignore.txt"
+                      LogicalName="RogueMod.Templates.Native.GitIgnore" />
+    <EmbeddedResource Include="../RogueMod.Templates/content/RogueMod.NativeMod/README.md"
+                      LogicalName="RogueMod.Templates.Native.Readme" />
+    <EmbeddedResource Include="../RogueMod.Templates/content/RogueMod.NativeMod/src/RogueMod.NativeMod.cpp"
+                      LogicalName="RogueMod.Templates.Native.Source" />
+    <EmbeddedResource Include="../RogueMod.Templates/content/RogueMod.NativeMod/mod.json"
+                      LogicalName="RogueMod.Templates.Native.Manifest" />
+    <EmbeddedResource Include="../RogueMod.Templates/content/RogueMod.PakMod/gitignore.txt"
+                      LogicalName="RogueMod.Templates.Pak.GitIgnore" />
+    <EmbeddedResource Include="../RogueMod.Templates/content/RogueMod.PakMod/README.md"
+                      LogicalName="RogueMod.Templates.Pak.Readme" />
+    <EmbeddedResource Include="../RogueMod.Templates/content/RogueMod.PakMod/mod.json"
+                      LogicalName="RogueMod.Templates.Pak.Manifest" />
   </ItemGroup>
 </Project>
 

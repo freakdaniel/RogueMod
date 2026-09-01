@@ -25,6 +25,18 @@
              Exclude="content/RogueMod.ManagedMod/**/bin/**;content/RogueMod.ManagedMod/**/obj/**"
              Pack="true"
              PackagePath="content/RogueMod.ManagedMod/%(RecursiveDir)%(Filename)%(Extension)" />
+    <Content Include="content/RogueMod.LuaMod/**/*"
+             Exclude="content/RogueMod.LuaMod/**/bin/**;content/RogueMod.LuaMod/**/obj/**"
+             Pack="true"
+             PackagePath="content/RogueMod.LuaMod/%(RecursiveDir)%(Filename)%(Extension)" />
+    <Content Include="content/RogueMod.NativeMod/**/*"
+             Exclude="content/RogueMod.NativeMod/**/bin/**;content/RogueMod.NativeMod/**/obj/**"
+             Pack="true"
+             PackagePath="content/RogueMod.NativeMod/%(RecursiveDir)%(Filename)%(Extension)" />
+    <Content Include="content/RogueMod.PakMod/**/*"
+             Exclude="content/RogueMod.PakMod/**/bin/**;content/RogueMod.PakMod/**/obj/**"
+             Pack="true"
+             PackagePath="content/RogueMod.PakMod/%(RecursiveDir)%(Filename)%(Extension)" />
     <None Include="README.md" Pack="true" PackagePath="/" />
   </ItemGroup>
 </Project>

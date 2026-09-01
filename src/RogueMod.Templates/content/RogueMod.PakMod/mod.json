@@ -1,0 +1,10 @@
+{
+  "id": "sample.pak-mod",
+  "name": "Sample pak mod",
+  "version": "0.1.0",
+  "kind": "pak",
+  "entryPoint": "paks/sample.pak-mod.pak",
+  "description": "A pak Deadzone: Rogue mod built with RogueMod.",
+  "defaultLanguage": "en",
+  "supportedLanguages": ["en"]
+}

@@ -1,0 +1,29 @@
+{
+  "name": "roguemod-docs",
+  "private": true,
+  "scripts": {
+    "gen-api": "dotnet run --project ../src/RogueMod.Tooling.ApiDocsGen -c Release -- --assembly ../src/RogueMod.Abstractions/bin/Release/net10.0/RogueMod.Abstractions.dll --assembly ../src/RogueMod.Sdk/bin/Release/net10.0/RogueMod.Sdk.dll --out reference",
+    "docusaurus": "docusaurus",
+    "dev": "docusaurus start",
+    "start": "docusaurus start",
+    "build": "docusaurus build",
+    "clear": "docusaurus clear",
+    "serve": "docusaurus serve"
+  },
+  "dependencies": {
+    "@docusaurus/core": "^3.0.0",
+    "@docusaurus/preset-classic": "^3.0.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@easyops-cn/docusaurus-search-local": "^0.49.0"
+  },
+  "browserslist": {
+    "production": [">0.5%", "not dead", "not op_mini all"],
+    "development": ["last 3 chrome version", "last 3 firefox version", "last 5 safari version"]
+  },
+  "engines": {
+    "node": ">=20.0"
+  }
+}

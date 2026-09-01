@@ -1,0 +1,11 @@
+{
+  "id": "sample.native-mod",
+  "name": "Sample native mod",
+  "version": "0.1.0",
+  "kind": "native",
+  "entryPoint": "dlls/main.dll",
+  "loaderId": "SampleNative",
+  "description": "A native Deadzone: Rogue mod built with RogueMod.",
+  "defaultLanguage": "en",
+  "supportedLanguages": ["en"]
+}

@@ -3,8 +3,12 @@ using System.Text.Json;
 
 namespace RogueMod.Sdk;
 
+/// <summary>Imports a UE4SS JMAP reflection dump into an <see cref="UnrealSdkModel"/>.</summary>
 public sealed class JMapImporter
 {
+    /// <summary>Parses the dump at <paramref name="path"/>, computes its SHA-256, and maps every class, script struct, and enum into the model.</summary>
+    /// <param name="path">Path to the <c>.jmap</c> file.</param>
+    /// <returns>The imported model with full provenance metadata.</returns>
     public UnrealSdkModel Import(string path)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);

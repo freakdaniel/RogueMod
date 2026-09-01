@@ -16,6 +16,7 @@
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <IncludeSymbols>true</IncludeSymbols>
     <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
   </PropertyGroup>
 
   <ItemGroup>
@@ -27,6 +28,7 @@
     <None Update="Managed/RogueMod.Sdk.props" Pack="true" PackagePath="build/RogueMod.Sdk.props" />
     <None Update="Managed/RogueMod.ManagedMod.targets" Pack="true" PackagePath="build/RogueMod.Sdk.targets" />
     <None Update="Native/include/RogueMod/NativeMod.hpp" Pack="true" PackagePath="build/native/include/RogueMod/NativeMod.hpp" />
+    <None Update="Native/include/RogueMod/NativeLog.hpp" Pack="true" PackagePath="build/native/include/RogueMod/NativeLog.hpp" />
     <None Update="Native/include/UE4SS/CppUserModBase.hpp" Pack="true" PackagePath="build/native/include/UE4SS/CppUserModBase.hpp" />
   </ItemGroup>
 </Project>

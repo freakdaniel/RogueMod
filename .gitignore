@@ -12,3 +12,8 @@
 .xwin-cache/
 .s*/
 .c*/
+website/node_modules/
+website/build/
+website/.docusaurus/
+website/reference/*
+!website/reference/.gitkeep

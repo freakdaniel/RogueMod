@@ -526,6 +526,9 @@ namespace RogueMod
         m_get_next_field_as_property = load_export<get_next_field_as_property_fn>(
             ue4ss_module,
             "?GetNextFieldAsProperty@FField@Unreal@RC@@QEAAPEAVFProperty@23@XZ");
+        m_get_super_struct = load_export<get_super_struct_fn>(
+            ue4ss_module,
+            "?GetSuperStruct@UStruct@Unreal@RC@@QEAAAEAPEAV123@XZ");
         m_get_array_inner = load_export<get_array_inner_fn>(
             ue4ss_module,
             "?GetInner@FArrayProperty@Unreal@RC@@QEAAAEAPEAVFProperty@23@XZ");
@@ -683,6 +686,7 @@ namespace RogueMod
             && m_ftext_copy_assignment != nullptr
             && m_get_first_property != nullptr
             && m_get_next_field_as_property != nullptr
+            && m_get_super_struct != nullptr
             && m_get_array_inner != nullptr
             && m_fmemory_malloc != nullptr
             && m_fmemory_free != nullptr
@@ -732,6 +736,7 @@ namespace RogueMod
                        && m_get_num_parms != nullptr
                        && m_get_first_property != nullptr
                        && m_get_next_field_as_property != nullptr
+                       && m_get_super_struct != nullptr
                        && m_get_offset != nullptr
                        && m_get_element_size != nullptr
                        && m_process_event != nullptr
@@ -1872,6 +1877,46 @@ namespace RogueMod
         return false;
     }
 
+    bool UnrealReflectionApi::collect_struct_fields(
+        void* script_struct,
+        std::vector<void*>& fields) const
+    {
+        if (script_struct == nullptr || m_get_first_property == nullptr
+            || m_get_next_field_as_property == nullptr || m_get_super_struct == nullptr)
+        {
+            return false;
+        }
+
+        std::vector<void*> hierarchy;
+        for (void* current = script_struct; current != nullptr;)
+        {
+            if (hierarchy.size() >= maximum_marshaled_array_length
+                || std::find(hierarchy.begin(), hierarchy.end(), current) != hierarchy.end())
+            {
+                return false;
+            }
+            hierarchy.push_back(current);
+            auto** super_reference = m_get_super_struct(current);
+            current = super_reference == nullptr ? nullptr : *super_reference;
+        }
+
+        std::reverse(hierarchy.begin(), hierarchy.end());
+        for (void* current : hierarchy)
+        {
+            for (void* field = m_get_first_property(current);
+                 field != nullptr;
+                 field = m_get_next_field_as_property(field))
+            {
+                if (fields.size() >= maximum_marshaled_array_length)
+                {
+                    return false;
+                }
+                fields.push_back(field);
+            }
+        }
+        return true;
+    }
+
     bool UnrealReflectionApi::marshal_struct_fields(
         void* property,
         const void* address,
@@ -1893,39 +1938,18 @@ namespace RogueMod
         }
 
         std::vector<void*> fields;
-        for (void* field = m_get_first_property(script_struct);
-             field != nullptr;
-             field = m_get_next_field_as_property(field))
-        {
-            fields.push_back(field);
-        }
-        if (fields.size() > maximum_marshaled_array_length)
+        if (!collect_struct_fields(script_struct, fields))
         {
             return false;
         }
 
         value.kind = encoded_kind;
+        value.reserved = static_cast<std::uint32_t>(fields.size());
         if (fields.empty())
         {
-            value.reserved = 0;
-            const auto* elem_sz = m_get_element_size(property);
-            std::size_t struct_size = (elem_sz && *elem_sz > 0) ? static_cast<std::size_t>(*elem_sz) : 0U;
-            if (struct_size == 0 || struct_size > maximum_marshaled_struct_size)
-            {
-                value.data = 0;
-                return true;
-            }
-            auto* copy = CoTaskMemAlloc(struct_size);
-            if (copy == nullptr)
-            {
-                value.data = 0;
-                return false;
-            }
-            std::memcpy(copy, address, struct_size);
-            value.data = reinterpret_cast<std::uint64_t>(copy);
+            value.data = 0;
             return true;
         }
-        value.reserved = static_cast<std::uint32_t>(fields.size());
 
         const auto wire_size = fields.size() * sizeof(UnrealValue);
         auto* wire = static_cast<UnrealValue*>(CoTaskMemAlloc(wire_size));
@@ -1986,18 +2010,9 @@ namespace RogueMod
         }
 
         std::vector<void*> fields;
-        for (void* field = m_get_first_property(script_struct);
-             field != nullptr;
-             field = m_get_next_field_as_property(field))
+        if (!collect_struct_fields(script_struct, fields) || fields.size() != value.reserved)
         {
-            fields.push_back(field);
-        }
-        if (fields.size() != value.reserved || fields.size() > maximum_marshaled_array_length)
-        {
-            if (!(fields.size() == 0 && value.reserved == 0))
-            {
-                return -4;
-            }
+            return -4;
         }
         const auto* wire = reinterpret_cast<const UnrealValue*>(value.data);
         if (value.reserved != 0 && wire == nullptr)
@@ -2005,25 +2020,9 @@ namespace RogueMod
             return -4;
         }
 
-        bool committed = false;
-
-        if (fields.empty())
-        {
-            if (value.reserved == 0 && value.data != 0)
-            {
-                const auto* szp = m_get_element_size(property);
-                auto sz = szp ? static_cast<std::size_t>(*szp) : 0U;
-                if (sz > 0 && sz <= maximum_marshaled_struct_size)
-                {
-                    std::memcpy(address, reinterpret_cast<const void*>(value.data), sz);
-                }
-                committed = true;
-                return 0;
-            }
-        }
-
         m_destroy_property_value(property, address);
         m_initialize_property_value(property, address);
+        bool committed = false;
         ScopeExit struct_cleanup([&]()
         {
             if (!committed)

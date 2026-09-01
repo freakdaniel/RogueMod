@@ -25,6 +25,10 @@
                             Condition="'%(ReferenceCopyLocalPaths.Filename)' != 'RogueMod.Abstractions'
                                       and '%(ReferenceCopyLocalPaths.Filename)' != 'RogueMod.Sdk'
                                       and '%(ReferenceCopyLocalPaths.Filename)' != 'DeadzoneRogue.Sdk'" />
+      <_RogueModRuntimeFile Include="@(RuntimeCopyLocalItems)"
+                            Condition="'%(RuntimeCopyLocalItems.Filename)' != 'RogueMod.Abstractions'
+                                      and '%(RuntimeCopyLocalItems.Filename)' != 'RogueMod.Sdk'
+                                      and '%(RuntimeCopyLocalItems.Filename)' != 'DeadzoneRogue.Sdk'" />
       <_RogueModMediaFile Include="$(MSBuildProjectDirectory)/media/**/*" />
     </ItemGroup>
 

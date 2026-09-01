@@ -1,0 +1,16 @@
+{
+  "$schema": "http://json.schemastore.org/template",
+  "author": "RogueMod contributors",
+  "classifications": ["RogueMod", "Deadzone Rogue", "Mod", "Lua"],
+  "identity": "RogueMod.Templates.LuaMod",
+  "name": "RogueMod Lua mod",
+  "shortName": "roguemod-lua",
+  "sourceName": "RogueMod.LuaMod",
+  "defaultName": "MyRogueLuaMod",
+  "preferNameDirectory": true,
+  "symbols": {
+    "mod-id": {"type":"parameter","datatype":"text","defaultValue":"sample.lua-mod","description":"Stable lowercase package identifier.","replaces":"sample.lua-mod"},
+    "mod-name": {"type":"parameter","datatype":"text","defaultValue":"Sample Lua mod","description":"Human-readable mod name.","replaces":"Sample Lua mod"},
+    "loader-id": {"type":"parameter","datatype":"text","defaultValue":"SampleLua","description":"Immutable UE4SS loader directory name.","replaces":"SampleLua"}
+  }
+}

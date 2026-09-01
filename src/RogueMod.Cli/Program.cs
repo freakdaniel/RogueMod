@@ -118,9 +118,10 @@ internal static class RogueModCli
             return 0;
         }
 
-        if (!args[0].Equals("managed", StringComparison.OrdinalIgnoreCase))
+        var templateName = args[0].ToLowerInvariant();
+        if (templateName is not ("managed" or "lua" or "native" or "pak"))
         {
-            throw new ArgumentException($"Unsupported mod template '{args[0]}'. Available template: managed.");
+            throw new ArgumentException($"Unsupported mod template '{args[0]}'. Available templates: managed, lua, native, pak.");
         }
 
         var templateArgs = args[1..];
@@ -131,12 +132,70 @@ internal static class RogueModCli
         }
 
         var modId = ReadOption(templateArgs, "--id")
-            ?? throw new ArgumentException("new managed requires --id <package-id>.");
+            ?? throw new ArgumentException($"new {templateName} requires --id <package-id>.");
         var projectName = ReadOption(templateArgs, "--name")
             ?? ManagedModScaffolder.CreateDefaultProjectName(modId);
         var displayName = ReadOption(templateArgs, "--display-name") ?? projectName;
         var output = ReadOption(templateArgs, "--output")
             ?? Path.Combine(Environment.CurrentDirectory, projectName);
+
+        if (templateName == "lua")
+        {
+            var luaResult = new LuaModScaffolder().Create(new LuaModScaffoldOptions
+            {
+                ModId = modId,
+                ProjectName = projectName,
+                DisplayName = displayName,
+                LoaderId = ReadOption(templateArgs, "--loader-id")
+                    ?? LuaModScaffolder.CreateDefaultLoaderId(projectName),
+                OutputDirectory = output
+            });
+            Console.WriteLine($"Created Lua mod: {luaResult.OutputDirectory}");
+            Console.WriteLine("Next:");
+            Console.WriteLine($"  cd \"{luaResult.OutputDirectory}\"");
+            Console.WriteLine("  roguemod install --game '<path to Deadzone Rogue>' --package . --replace");
+            Console.WriteLine("Scripts/main.lua is the entry point; the UE4SS Lua API provides the reflection layer.");
+            return 0;
+        }
+
+        if (templateName == "native")
+        {
+            var nativeResult = new NativeModScaffolder().Create(new NativeModScaffoldOptions
+            {
+                ModId = modId,
+                ProjectName = projectName,
+                DisplayName = displayName,
+                LoaderId = ReadOption(templateArgs, "--loader-id")
+                    ?? NativeModScaffolder.CreateDefaultLoaderId(projectName),
+                OutputDirectory = output
+            });
+            Console.WriteLine($"Created native mod: {nativeResult.OutputDirectory}");
+            Console.WriteLine("Next:");
+            Console.WriteLine($"  cd \"{nativeResult.OutputDirectory}\"");
+            Console.WriteLine("  Set ROGUEMOD_NATIVE_INCLUDE_DIR to the RogueMod.Sdk build/native/include directory.");
+            Console.WriteLine("  cmake -S . -B .build -A x64");
+            Console.WriteLine("  cmake --build .build --config Release --target PackageRogueNativeMod");
+            Console.WriteLine($"  roguemod install --game '<path to Deadzone Rogue>' --package \"{nativeResult.PackageDirectory}\" --replace");
+            return 0;
+        }
+
+        if (templateName == "pak")
+        {
+            var pakResult = new PakModScaffolder().Create(new PakModScaffoldOptions
+            {
+                ModId = modId,
+                ProjectName = projectName,
+                DisplayName = displayName,
+                OutputDirectory = output
+            });
+            Console.WriteLine($"Created pak mod: {pakResult.OutputDirectory}");
+            Console.WriteLine("Next:");
+            Console.WriteLine($"  cd \"{pakResult.OutputDirectory}\"");
+            Console.WriteLine($"  Pack the payload to {Path.GetFileName(pakResult.PakEntryPointPath)} with repak or UnrealPak (see README.md).");
+            Console.WriteLine("  roguemod install --game '<path to Deadzone Rogue>' --package . --replace");
+            return 0;
+        }
+
         var result = new ManagedModScaffolder().Create(new ManagedModScaffoldOptions
         {
             ModId = modId,
@@ -374,6 +433,9 @@ internal static class RogueModCli
         Console.WriteLine();
         Console.WriteLine("Usage:");
         Console.WriteLine("  roguemod new managed --id <package-id> [--name <project-name>] [--display-name <name>] [--output <directory>] [--sdk-version <version>] [--game-sdk-version <version>]");
+        Console.WriteLine("  roguemod new lua --id <package-id> [--name <project-name>] [--display-name <name>] [--loader-id <name>] [--output <directory>]");
+        Console.WriteLine("  roguemod new native --id <package-id> [--name <project-name>] [--display-name <name>] [--loader-id <name>] [--output <directory>]");
+        Console.WriteLine("  roguemod new pak --id <package-id> [--name <project-name>] [--display-name <name>] [--output <directory>]");
         Console.WriteLine("  roguemod install --game <directory> --package <directory> [--replace] [--profile <profile.json>]");
         Console.WriteLine("  roguemod list --game <directory> [--profile <profile.json>]");
         Console.WriteLine("  roguemod uninstall --game <directory> --id <package-id> [--profile <profile.json>]");
@@ -389,14 +451,34 @@ internal static class RogueModCli
 
     private static void PrintNewUsage()
     {
-        Console.WriteLine("Create a managed RogueMod project:");
+        Console.WriteLine("Create a RogueMod project:");
         Console.WriteLine("  roguemod new managed --id <package-id> [options]");
+        Console.WriteLine("  roguemod new lua --id <package-id> [options]");
+        Console.WriteLine("  roguemod new native --id <package-id> [options]");
+        Console.WriteLine("  roguemod new pak --id <package-id> [options]");
         Console.WriteLine();
-        Console.WriteLine("Options:");
+        Console.WriteLine("Managed options:");
         Console.WriteLine("  --name <project-name>        C# project and namespace name; derived from the id by default");
         Console.WriteLine("  --display-name <name>        Human-readable mod name; defaults to the project name");
         Console.WriteLine("  --output <directory>         New output directory; defaults to ./<project-name>");
         Console.WriteLine("  --sdk-version <version>      RogueMod.Sdk version; defaults to 0.1.0");
         Console.WriteLine("  --game-sdk-version <version> DeadzoneRogue.Sdk version; defaults to 0.1.0");
+        Console.WriteLine();
+        Console.WriteLine("Lua options:");
+        Console.WriteLine("  --name <project-name>        Project directory name; derived from the id by default");
+        Console.WriteLine("  --display-name <name>        Human-readable mod name; defaults to the project name");
+        Console.WriteLine("  --loader-id <name>           UE4SS loader directory name; derived from the project name by default");
+        Console.WriteLine("  --output <directory>         New output directory; defaults to ./<project-name>");
+        Console.WriteLine();
+        Console.WriteLine("Native options:");
+        Console.WriteLine("  --name <project-name>        Project directory name; derived from the id by default");
+        Console.WriteLine("  --display-name <name>        Human-readable mod name; defaults to the project name");
+        Console.WriteLine("  --loader-id <name>           UE4SS loader directory and C++ mod class name; derived from the project name by default");
+        Console.WriteLine("  --output <directory>         New output directory; defaults to ./<project-name>");
+        Console.WriteLine();
+        Console.WriteLine("Pak options:");
+        Console.WriteLine("  --name <project-name>        Project directory name; derived from the id by default");
+        Console.WriteLine("  --display-name <name>        Human-readable mod name; defaults to the project name");
+        Console.WriteLine("  --output <directory>         New output directory; defaults to ./<project-name>");
     }
 }
